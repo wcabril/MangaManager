@@ -12,10 +12,10 @@
 
         <!-- PASTA BASE -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-            <TextBlock Text="Pasta:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBlock Text="Folder:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0"/>
             <TextBox x:Name="BasePathBox" Width="620" IsReadOnly="True" VerticalAlignment="Center"
                      Background="#2D2D2D" Foreground="White" BorderBrush="#555"/>
-            <Button Content="Selecionar Pasta" Click="SelectFolder_Click"
+            <Button Content="Select Folder" Click="SelectFolder_Click"
                     Margin="8,0,0,0" Padding="10,4"/>
         </StackPanel>
 
@@ -27,23 +27,25 @@
 
             <!-- LISTA -->
             <StackPanel Grid.Column="0">
-                <TextBlock Text="Mangás" Foreground="White" FontSize="16" Margin="0,0,0,5"/>
+                <TextBlock Text="Manga List" Foreground="White" FontSize="16" Margin="0,0,0,5"/>
                 <ListBox x:Name="MangaList" Height="420"/>
-                <Button Content="Atualizar Lista" Click="Refresh_Click" Margin="0,8,0,0" Padding="0,5"/>
+                <Button Content="Refresh List" Click="Refresh_Click" Margin="0,8,0,0" Padding="0,5"/>
             </StackPanel>
 
             <!-- AÇÕES -->
             <StackPanel Grid.Column="1" Margin="20,0,0,0">
 
-                <TextBlock Text="Autor" Foreground="White"/>
+                <TextBlock Text="Author" Foreground="White"/>
                 <DockPanel Margin="0,5,0,10">
-                    <Button Content="🔍 Buscar Autor e Volumes (AniList)" DockPanel.Dock="Right"
+                    <Button Content="🔍 Fetch Author and Volumes (AniList)" DockPanel.Dock="Right"
                             Click="FetchAuthor_Click" Padding="10,0" Margin="6,0,0,0"/>
                     <TextBox x:Name="AuthorBox"/>
                 </DockPanel>
-                <Button Content="🌐 Organizar com MangaDex" Click="OrganizeMangaDex_Click" Height="32" Margin="0,4,0,0" Background="#2A5298" Foreground="White"/>
-                <Button Content="📦 Extrair CBZ"           Click="Extract_Click"         Height="32" Margin="0,4,0,0"/>
-                <Button Content="📋 Gerar ComicInfo"       Click="ComicInfo_Click"       Height="32" Margin="0,4,0,0"/>
+
+                <Button Content="📂 Organize Chapters in Volumes" Click="OrganizeMangaDex_Click" Height="32" Margin="0,4,0,0" Background="#2A5298" Foreground="White"/>
+                <Button Content="📦 Extract CBZ"                  Click="Extract_Click"          Height="32" Margin="0,4,0,0"/>
+                <Button Content="📋 Generate ComicInfo"           Click="ComicInfo_Click"        Height="32" Margin="0,4,0,0"/>
+                <Button Content="🧹 Cleanup CBZ Files"            Click="Cleanup_Click"          Height="32" Margin="0,4,0,0" Background="#5C3317" Foreground="White"/>
 
                 <!-- PROGRESSO -->
                 <ProgressBar x:Name="ProgressBar" Height="18" Margin="0,14,0,4" Minimum="0" Maximum="100"/>
