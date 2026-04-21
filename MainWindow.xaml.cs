@@ -609,12 +609,37 @@ namespace MangaManager
                 foreach (var vol in volumes)
                 {
                     var cbzs = Directory.GetFiles(vol, "*.cbz").OrderBy(x => x).ToArray();
-                    int index = 1;
 
                     foreach (var cbz in cbzs)
                     {
-                        string chapter = $"Capitulo {index:D3}";
-                        string dest = Path.Combine(vol, chapter);
+                        string fileName = Path.GetFileNameWithoutExtension(cbz);
+
+                        // Extrai número do capítulo do nome do arquivo
+                        var chMatch = System.Text.RegularExpressions.Regex.Match(
+                            fileName,
+                            @"(?:cap[ií]tulo|capitulo|cap\.?|chapter|ch\.?)\s*(\d+(?:\.\d+)?)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                        if (!chMatch.Success)
+                            chMatch = System.Text.RegularExpressions.Regex.Match(fileName, @"(\d+(?:\.\d+)?)");
+
+                        string chapterName;
+                        if (chMatch.Success)
+                        {
+                            string chNum = chMatch.Groups[1].Value.TrimStart('0');
+                            if (string.IsNullOrEmpty(chNum)) chNum = "0";
+
+                            chapterName = chNum.Contains('.')
+                                ? $"Capitulo {chNum.PadLeft(6, '0')}"
+                                : $"Capitulo {int.Parse(chNum):D3}";
+                        }
+                        else
+                        {
+                            // Fallback: usa nome original do arquivo
+                            chapterName = fileName;
+                        }
+
+                        string dest = Path.Combine(vol, chapterName);
                         Directory.CreateDirectory(dest);
 
                         var psi = new ProcessStartInfo
@@ -632,10 +657,8 @@ namespace MangaManager
                         {
                             ProgressBar.Value = (double)current / total * 100;
                             ProgressText.Text = $"{current} / {total}";
-                            Log($"Extracted: {Path.GetFileName(cbz)} → {chapter}");
+                            Log($"Extracted: {Path.GetFileName(cbz)} → {chapterName}");
                         });
-
-                        index++;
                     }
                 }
             });
