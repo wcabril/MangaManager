@@ -22,7 +22,6 @@ namespace MangaManager
         {
             InitializeComponent();
 
-            // Carrega pasta salva anteriormente
             var saved = Properties.Settings.Default.BasePath;
             if (!string.IsNullOrEmpty(saved) && Directory.Exists(saved))
             {
@@ -33,13 +32,13 @@ namespace MangaManager
         }
 
         // ==============================
-        // 📂 SELECIONAR PASTA
+        // 📂 SELECT FOLDER
         // ==============================
         private void SelectFolder_Click(object sender, RoutedEventArgs e)
         {
             using var dialog = new WinForms.FolderBrowserDialog
             {
-                Description = "Selecione a pasta raiz dos mangás",
+                Description = "Select the root manga folder",
                 UseDescriptionForTitle = true,
                 SelectedPath = basePath
             };
@@ -49,7 +48,6 @@ namespace MangaManager
                 basePath = dialog.SelectedPath ?? string.Empty;
                 BasePathBox.Text = basePath;
 
-                // Salva para próxima vez
                 Properties.Settings.Default.BasePath = basePath;
                 Properties.Settings.Default.Save();
 
@@ -58,7 +56,7 @@ namespace MangaManager
         }
 
         // ==============================
-        // 📋 CARREGAR LISTA
+        // 📋 LOAD LIST
         // ==============================
         private void LoadMangas()
         {
@@ -66,7 +64,7 @@ namespace MangaManager
 
             if (string.IsNullOrEmpty(basePath) || !Directory.Exists(basePath))
             {
-                Log("Pasta inválida ou não encontrada.");
+                Log("Invalid or non-existent folder.");
                 return;
             }
 
@@ -78,14 +76,14 @@ namespace MangaManager
             foreach (var m in mangas)
                 MangaList.Items.Add(m!);
 
-            Log($"{MangaList.Items.Count} mangá(s) encontrado(s).");
+            Log($"{MangaList.Items.Count} manga(s) found.");
         }
 
         private string? GetSelectedPath()
         {
             if (MangaList.SelectedItem == null)
             {
-                Log("Selecione um mangá.");
+                Log("Please select a manga.");
                 return null;
             }
 
@@ -163,7 +161,7 @@ namespace MangaManager
             }
             catch (Exception ex)
             {
-                Log($"Erro AniList: {ex.Message}");
+                Log($"AniList error: {ex.Message}");
             }
 
             return new AniListInfo(null, null);
@@ -173,32 +171,32 @@ namespace MangaManager
         {
             if (MangaList.SelectedItem == null)
             {
-                Log("Selecione um mangá primeiro.");
+                Log("Please select a manga first.");
                 return;
             }
 
             string title = MangaList.SelectedItem.ToString()!;
-            Log($"Buscando informações de \"{title}\"...");
+            Log($"Fetching info for \"{title}\"...");
 
             var info = await GetInfoFromAniList(title);
 
             if (info.Author == null && info.Volumes == null)
             {
-                Log("Nenhuma informação encontrada no AniList.");
+                Log("No information found on AniList.");
                 return;
             }
 
             string msg = "";
-            if (info.Author != null) msg += $"Autor: {info.Author}\n";
+            if (info.Author != null) msg += $"Author: {info.Author}\n";
             if (info.Volumes != null) msg += $"Volumes: {info.Volumes}\n";
-            msg += "\nConfirmar?";
+            msg += "\nConfirm?";
 
             if (MessageBox.Show(msg, "AniList", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
             {
                 if (info.Author != null)
                 {
                     AuthorBox.Text = info.Author;
-                    Log($"Autor definido: {info.Author}");
+                    Log($"Author set: {info.Author}");
                 }
 
                 if (info.Volumes != null)
@@ -206,17 +204,17 @@ namespace MangaManager
                     var path = GetSelectedPath();
                     if (path != null)
                     {
-                        int criados = 0;
+                        int created = 0;
                         for (int i = 1; i <= info.Volumes; i++)
                         {
                             string volPath = Path.Combine(path, $"Volume {i:D2}");
                             if (!Directory.Exists(volPath))
                             {
                                 Directory.CreateDirectory(volPath);
-                                criados++;
+                                created++;
                             }
                         }
-                        Log($"{criados} volume(s) criado(s) (de {info.Volumes} do AniList).");
+                        Log($"{created} volume(s) created (of {info.Volumes} from AniList).");
                     }
                 }
             }
@@ -246,7 +244,7 @@ namespace MangaManager
                                            .GetProperty("title")
                                            .EnumerateObject().First().Value.GetString();
 
-                Log($"MangaDex: encontrado \"{mangaTitle}\"");
+                Log($"MangaDex: found \"{mangaTitle}\"");
 
                 int offset = 0;
                 const int limit = 500;
@@ -285,11 +283,11 @@ namespace MangaManager
                     if (offset >= total || count == 0) break;
                 }
 
-                Log($"MangaDex: {map.Count} capítulos mapeados.");
+                Log($"MangaDex: {map.Count} chapter(s) mapped.");
             }
             catch (Exception ex)
             {
-                Log($"Erro MangaDex: {ex.Message}");
+                Log($"MangaDex error: {ex.Message}");
             }
 
             return map;
@@ -307,7 +305,6 @@ namespace MangaManager
 
             try
             {
-                // 1. Buscar o mangá
                 var searchJson = JsonSerializer.Serialize(new { search = title, stype = "title" });
                 var searchContent = new StringContent(searchJson, Encoding.UTF8, "application/json");
                 var searchResp = await client.PostAsync("https://api.mangaupdates.com/v1/series/search", searchContent);
@@ -318,15 +315,14 @@ namespace MangaManager
 
                 if (results.GetArrayLength() == 0)
                 {
-                    Log("MangaUpdates: nenhum resultado encontrado.");
+                    Log("MangaUpdates: no results found.");
                     return map;
                 }
 
                 var seriesId = results[0].GetProperty("record").GetProperty("series_id").GetInt64();
                 var seriesTitle = results[0].GetProperty("record").GetProperty("title").GetString();
-                Log($"MangaUpdates: encontrado \"{seriesTitle}\"");
+                Log($"MangaUpdates: found \"{seriesTitle}\"");
 
-                // 2. Buscar releases com volume e capítulo
                 int page = 1;
                 while (true)
                 {
@@ -356,7 +352,6 @@ namespace MangaManager
 
                         if (string.IsNullOrEmpty(chNum) || string.IsNullOrEmpty(volNum) || volNum == "0") continue;
 
-                        // Expande ranges ex: "1-5" → 1,2,3,4,5
                         if (chNum.Contains('-'))
                         {
                             var parts = chNum.Split('-');
@@ -382,18 +377,18 @@ namespace MangaManager
                     page++;
                 }
 
-                Log($"MangaUpdates: {map.Count} capítulos mapeados.");
+                Log($"MangaUpdates: {map.Count} chapter(s) mapped.");
             }
             catch (Exception ex)
             {
-                Log($"Erro MangaUpdates: {ex.Message}");
+                Log($"MangaUpdates error: {ex.Message}");
             }
 
             return map;
         }
 
         // ==============================
-        // 🗂 FALLBACK MANUAL
+        // 🗂 MANUAL FALLBACK
         // ==============================
         private Dictionary<string, string> BuildManualMap(string[] cbzFiles, int chaptersPerVolume)
         {
@@ -431,7 +426,7 @@ namespace MangaManager
         }
 
         // ==============================
-        // 🌐 ORGANIZAR COM MANGADEX
+        // 📂 ORGANIZE CHAPTERS IN VOLUMES
         // ==============================
         private async void OrganizeMangaDex_Click(object sender, RoutedEventArgs e)
         {
@@ -440,53 +435,49 @@ namespace MangaManager
 
             if (!File.Exists(zipPath))
             {
-                Log($"7-Zip não encontrado em: {zipPath}");
+                Log($"7-Zip not found at: {zipPath}");
                 return;
             }
 
             var cbzFiles = Directory.GetFiles(path, "*.cbz").OrderBy(x => x).ToArray();
             if (cbzFiles.Length == 0)
             {
-                Log("Nenhum .cbz encontrado na pasta do mangá.");
+                Log("No .cbz files found in manga folder.");
                 return;
             }
 
             string title = MangaList.SelectedItem!.ToString()!;
             Dictionary<string, string> volumeMap;
 
-            // 1. Tenta MangaDex
-            Log("[1/3] Buscando no MangaDex...");
+            Log("[1/3] Searching MangaDex...");
             volumeMap = await GetVolumeMapFromMangaDex(title);
 
-            // 2. Fallback MangaUpdates
             if (volumeMap.Count == 0)
             {
-                Log("[2/3] MangaDex sem dados. Tentando MangaUpdates...");
+                Log("[2/3] MangaDex empty. Trying MangaUpdates...");
                 volumeMap = await GetVolumeMapFromMangaUpdates(title);
             }
 
-            // 3. Fallback manual
             if (volumeMap.Count == 0)
             {
-                Log("[3/3] Nenhuma fonte encontrou dados. Usando distribuição manual...");
+                Log("[3/3] No data found. Using manual distribution...");
 
                 string input = Microsoft.VisualBasic.Interaction.InputBox(
-                    "Não foi possível obter o mapa de capítulos automaticamente.\n\n" +
-                    "Quantos capítulos por volume?",
-                    "Distribuição Manual",
+                    "Could not fetch chapter map automatically.\n\nHow many chapters per volume?",
+                    "Manual Distribution",
                     "5");
 
                 if (!int.TryParse(input, out int chapPerVol) || chapPerVol <= 0)
                 {
-                    Log("Operação cancelada.");
+                    Log("Operation cancelled.");
                     return;
                 }
 
                 volumeMap = BuildManualMap(cbzFiles, chapPerVol);
-                Log($"Mapa manual: {volumeMap.Count} capítulos, {chapPerVol} por volume.");
+                Log($"Manual map: {volumeMap.Count} chapters, {chapPerVol} per volume.");
             }
 
-            Log($"{cbzFiles.Length} arquivo(s) encontrado(s). Iniciando organização...");
+            Log($"{cbzFiles.Length} file(s) found. Starting organization...");
             ProgressBar.Value = 0;
             ProgressText.Text = "";
 
@@ -494,13 +485,12 @@ namespace MangaManager
             {
                 int total = cbzFiles.Length;
                 int current = 0;
-                int naoCasados = 0;
+                int unmatched = 0;
 
                 foreach (var cbz in cbzFiles)
                 {
                     string fileName = Path.GetFileNameWithoutExtension(cbz);
 
-                    // Tenta extrair Vol e Ch diretamente do nome: "Vol. 01 Ch. 001"
                     var volMatch = System.Text.RegularExpressions.Regex.Match(
                         fileName,
                         @"[Vv]ol\.?\s*(\d+)",
@@ -516,8 +506,8 @@ namespace MangaManager
 
                     if (!chMatch.Success)
                     {
-                        Dispatcher.Invoke(() => Log($"⚠ Não reconhecido: {Path.GetFileName(cbz)}"));
-                        naoCasados++;
+                        Dispatcher.Invoke(() => Log($"⚠ Not recognized: {Path.GetFileName(cbz)}"));
+                        unmatched++;
                         current++;
                         continue;
                     }
@@ -527,14 +517,12 @@ namespace MangaManager
 
                     string? volNum = null;
 
-                    // Prioridade 1: volume no nome do arquivo
                     if (volMatch.Success)
                     {
                         volNum = volMatch.Groups[1].Value.TrimStart('0');
                         if (string.IsNullOrEmpty(volNum)) volNum = "1";
                     }
 
-                    // Prioridade 2: mapa do MangaDex/MangaUpdates/manual
                     if (volNum == null)
                         volumeMap.TryGetValue(chapterNum, out volNum);
 
@@ -543,8 +531,8 @@ namespace MangaManager
 
                     if (volNum == null || volNum == "0")
                     {
-                        Dispatcher.Invoke(() => Log($"⚠ Volume não encontrado para cap {chapterNum}: {Path.GetFileName(cbz)}"));
-                        naoCasados++;
+                        Dispatcher.Invoke(() => Log($"⚠ Volume not found for chapter {chapterNum}: {Path.GetFileName(cbz)}"));
+                        unmatched++;
                         current++;
                         continue;
                     }
@@ -579,17 +567,17 @@ namespace MangaManager
                     {
                         ProgressBar.Value = (double)current / total * 100;
                         ProgressText.Text = $"{current} / {total}";
-                        Log($"✓ Cap {chapterNum} → {volFolder}\\{chFormatted}");
+                        Log($"✓ Ch {chapterNum} → {volFolder}\\{chFormatted}");
                     });
                 }
 
                 Dispatcher.Invoke(() =>
-                    Log($"Organização finalizada. {current - naoCasados} ok, {naoCasados} não processado(s)."));
+                    Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched."));
             });
         }
 
         // ==============================
-        // 📦 EXTRAIR CBZ
+        // 📦 EXTRACT CBZ
         // ==============================
         private async void Extract_Click(object sender, RoutedEventArgs e)
         {
@@ -598,7 +586,7 @@ namespace MangaManager
 
             if (!File.Exists(zipPath))
             {
-                Log($"7-Zip não encontrado em: {zipPath}");
+                Log($"7-Zip not found at: {zipPath}");
                 return;
             }
 
@@ -612,7 +600,7 @@ namespace MangaManager
 
                 if (total == 0)
                 {
-                    Dispatcher.Invoke(() => Log("Nenhum .cbz encontrado."));
+                    Dispatcher.Invoke(() => Log("No .cbz files found."));
                     return;
                 }
 
@@ -644,7 +632,7 @@ namespace MangaManager
                         {
                             ProgressBar.Value = (double)current / total * 100;
                             ProgressText.Text = $"{current} / {total}";
-                            Log($"Extraído: {Path.GetFileName(cbz)} → {chapter}");
+                            Log($"Extracted: {Path.GetFileName(cbz)} → {chapter}");
                         });
 
                         index++;
@@ -652,11 +640,11 @@ namespace MangaManager
                 }
             });
 
-            Log("Extração finalizada.");
+            Log("Extraction complete.");
         }
 
         // ==============================
-        // 📋 COMICINFO
+        // 📋 GENERATE COMICINFO
         // ==============================
         private void ComicInfo_Click(object sender, RoutedEventArgs e)
         {
@@ -667,13 +655,13 @@ namespace MangaManager
 
             if (string.IsNullOrWhiteSpace(author))
             {
-                Log("Informe o autor antes de gerar o ComicInfo.");
+                Log("Please enter the author before generating ComicInfo.");
                 return;
             }
 
             string mangaName = MangaList.SelectedItem?.ToString() ?? "";
             var volumes = Directory.GetDirectories(path, "Volume *");
-            int gerados = 0;
+            int generated = 0;
 
             foreach (var vol in volumes)
             {
@@ -696,11 +684,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
   <Format>Manga</Format>
 </ComicInfo>");
 
-                    gerados++;
+                    generated++;
                 }
             }
 
-            Log($"ComicInfo gerado em {gerados} capítulo(s).");
+            Log($"ComicInfo generated for {generated} chapter(s).");
         }
 
         // ==============================
@@ -711,7 +699,6 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             var path = GetSelectedPath();
             if (path == null) return;
 
-            // Busca todos os .cbz dentro das pastas de volume
             var cbzFiles = Directory.GetFiles(path, "*.cbz", SearchOption.AllDirectories)
                                     .OrderBy(x => x)
                                     .ToArray();
@@ -730,7 +717,6 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             foreach (var cbz in cbzFiles)
             {
-                // Ignora arquivos que já estão na pasta CBZ de destino
                 if (Path.GetDirectoryName(cbz) == cbzBackupFolder)
                 {
                     skipped++;
@@ -739,7 +725,6 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
                 string dest = Path.Combine(cbzBackupFolder, Path.GetFileName(cbz));
 
-                // Evita sobrescrever se já existe
                 if (File.Exists(dest))
                 {
                     Log($"⚠ Already exists, skipping: {Path.GetFileName(cbz)}");
@@ -756,7 +741,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         }
 
         // ==============================
-        // 🔄 OUTROS
+        // 🔄 OTHER
         // ==============================
         private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMangas();
 
