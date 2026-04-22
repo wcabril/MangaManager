@@ -7,7 +7,16 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWPF>true</UseWPF>
 		<UseWindowsForms>true</UseWindowsForms>
+		<ApplicationIcon>app.ico</ApplicationIcon>
 	</PropertyGroup>
+
+	<ItemGroup>
+	  <None Remove="app.ico" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Resource Include="app.ico" />
+	</ItemGroup>
 
 	<ItemGroup>
 	  <Compile Update="Properties\Settings.Designer.cs">
