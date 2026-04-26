@@ -21,6 +21,7 @@ namespace MangaManager
         public MainWindow()
         {
             InitializeComponent();
+            ResetButtonStates();
 
             var saved = Properties.Settings.Default.BasePath;
             if (!string.IsNullOrEmpty(saved) && Directory.Exists(saved))
@@ -58,6 +59,80 @@ namespace MangaManager
         // ==============================
         // 📋 LOAD LIST
         // ==============================
+
+        // Modelo de item da lista com status visual
+        private class MangaItem : System.ComponentModel.INotifyPropertyChanged
+        {
+            public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+            private void OnChanged(string prop) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(prop));
+
+            private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
+                           _statusWeight = "Normal", _statusTip = "",
+                           _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "";
+
+            public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
+            public string StatusColor { get => _statusColor; set { _statusColor = value; OnChanged(nameof(StatusColor)); } }
+            public string StatusForeground { get => _statusForeground; set { _statusForeground = value; OnChanged(nameof(StatusForeground)); } }
+            public string StatusWeight { get => _statusWeight; set { _statusWeight = value; OnChanged(nameof(StatusWeight)); } }
+            public string StatusTip { get => _statusTip; set { _statusTip = value; OnChanged(nameof(StatusTip)); } }
+            public string Chk1 { get => _chk1; set { _chk1 = value; OnChanged(nameof(Chk1)); } }
+            public string Chk2 { get => _chk2; set { _chk2 = value; OnChanged(nameof(Chk2)); } }
+            public string Chk3 { get => _chk3; set { _chk3 = value; OnChanged(nameof(Chk3)); } }
+            public string Chk4 { get => _chk4; set { _chk4 = value; OnChanged(nameof(Chk4)); } }
+            public string Chk5 { get => _chk5; set { _chk5 = value; OnChanged(nameof(Chk5)); } }
+        }
+
+        private enum MangaStatus { None, Partial, Complete }
+
+        private MangaStatus CheckMangaStatus(string mangaPath, out string tip)
+        {
+            tip = "";
+            var steps = new List<string>();
+            int completed = 0;
+
+            // 1. Volumes criados
+            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            if (volumes.Length == 0)
+            {
+                tip = "❌ No volume folders found";
+                return MangaStatus.None;
+            }
+            completed++;
+            steps.Add("✅ Volumes created");
+
+            // 2. Capítulos organizados
+            bool hasChapters = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
+            if (hasChapters) { completed++; steps.Add("✅ Chapters organized"); }
+            else steps.Add("❌ Chapters not organized");
+
+            // 3. CBZ extraídos (imagens dentro dos capítulos)
+            bool hasImages = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    Directory.GetFiles(ch, "*.jpg").Length > 0 ||
+                    Directory.GetFiles(ch, "*.png").Length > 0 ||
+                    Directory.GetFiles(ch, "*.webp").Length > 0));
+            if (hasImages) { completed++; steps.Add("✅ CBZ extracted"); }
+            else steps.Add("❌ CBZ not extracted");
+
+            // 4. ComicInfo gerado
+            bool hasComicInfo = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
+            if (hasComicInfo) { completed++; steps.Add("✅ ComicInfo generated"); }
+            else steps.Add("❌ ComicInfo missing");
+
+            // 5. Cleanup feito (sem CBZ soltos dentro dos volumes)
+            bool noCbzInVolumes = !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+            if (noCbzInVolumes) { completed++; steps.Add("✅ Cleanup done"); }
+            else steps.Add("❌ CBZ files still inside volume folders");
+
+            tip = string.Join("\n", steps);
+
+            if (completed == 5) return MangaStatus.Complete;
+            if (completed >= 1) return MangaStatus.Partial;
+            return MangaStatus.None;
+        }
+
         private void LoadMangas()
         {
             MangaList.Items.Clear();
@@ -68,26 +143,61 @@ namespace MangaManager
                 return;
             }
 
-            var mangas = Directory.GetDirectories(basePath)
-                                  .Select(Path.GetFileName)
-                                  .Where(x => x != null)
-                                  .OrderBy(x => x);
+            var dirs = Directory.GetDirectories(basePath)
+                                .Select(Path.GetFileName)
+                                .Where(x => x != null)
+                                .OrderBy(x => x)
+                                .ToArray();
 
-            foreach (var m in mangas)
-                MangaList.Items.Add(m!);
+            foreach (var name in dirs)
+            {
+                string fullPath = Path.Combine(basePath, name!);
+                var item = BuildMangaItem(name!, fullPath);
+                MangaList.Items.Add(item);
+            }
 
             Log($"{MangaList.Items.Count} manga(s) found.");
         }
 
+        private MangaItem BuildMangaItem(string name, string fullPath)
+        {
+            var volumes = Directory.GetDirectories(fullPath, "Volume *");
+
+            bool s1 = Directory.GetDirectories(fullPath, "Volume *").Length > 0; // volumes criados
+            bool s2 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
+            bool s3 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                        Directory.GetFiles(ch, "*.jpg").Length > 0 ||
+                        Directory.GetFiles(ch, "*.png").Length > 0 ||
+                        Directory.GetFiles(ch, "*.webp").Length > 0));
+            bool s4 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                        File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
+            bool s5 = volumes.Length > 0 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+
+            bool complete = s1 && s2 && s3 && s4 && s5;
+
+            return new MangaItem
+            {
+                Name = name,
+                StatusColor = complete ? "#95b634" : "Transparent",
+                StatusForeground = complete ? "#1a1a1a" : "White",
+                StatusWeight = complete ? "Bold" : "Normal",
+                Chk1 = s1 ? "✔" : "",
+                Chk2 = s2 ? "✔" : "",
+                Chk3 = s3 ? "✔" : "",
+                Chk4 = s4 ? "✔" : "",
+                Chk5 = s5 ? "✔" : "",
+            };
+        }
+
         private string? GetSelectedPath()
         {
-            if (MangaList.SelectedItem == null)
+            if (MangaList.SelectedItem is not MangaItem selected)
             {
                 Log("Please select a manga.");
                 return null;
             }
 
-            return Path.Combine(basePath, MangaList.SelectedItem.ToString()!);
+            return Path.Combine(basePath, selected.Name);
         }
 
         // ==============================
@@ -169,13 +279,13 @@ namespace MangaManager
 
         private async void FetchAuthor_Click(object sender, RoutedEventArgs e)
         {
-            if (MangaList.SelectedItem == null)
+            if (MangaList.SelectedItem is not MangaItem selectedManga)
             {
                 Log("Please select a manga first.");
                 return;
             }
 
-            string title = MangaList.SelectedItem.ToString()!;
+            string title = selectedManga.Name;
             Log($"Fetching info for \"{title}\"...");
 
             var info = await GetInfoFromAniList(title);
@@ -446,7 +556,7 @@ namespace MangaManager
                 return;
             }
 
-            string title = MangaList.SelectedItem!.ToString()!;
+            string title = (MangaList.SelectedItem as MangaItem)!.Name;
             Dictionary<string, string> volumeMap;
 
             Log("[1/3] Searching MangaDex...");
@@ -475,6 +585,28 @@ namespace MangaManager
 
                 volumeMap = BuildManualMap(cbzFiles, chapPerVol);
                 Log($"Manual map: {volumeMap.Count} chapters, {chapPerVol} per volume.");
+            }
+
+            // Se o mapa não cobriu todos os arquivos, pergunta sobre fallback manual para os restantes
+            if (volumeMap.Count > 0 && volumeMap.Count < cbzFiles.Length)
+            {
+                Log($"⚠ {volumeMap.Count} of {cbzFiles.Length} chapters mapped. Some chapters may be missing from the source.");
+
+                string input = Microsoft.VisualBasic.Interaction.InputBox(
+                    $"The source only mapped {volumeMap.Count} of {cbzFiles.Length} chapters.\n\n" +
+                    "For unmatched chapters, how many chapters per volume?\n(Leave empty to skip unmatched files)",
+                    "Partial Map — Manual Fallback",
+                    "5");
+
+                if (int.TryParse(input, out int chapPerVol) && chapPerVol > 0)
+                {
+                    // Adiciona ao mapa apenas os capítulos que ainda não estão mapeados
+                    var manualMap = BuildManualMap(cbzFiles, chapPerVol);
+                    foreach (var kvp in manualMap)
+                        volumeMap.TryAdd(kvp.Key, kvp.Value);
+
+                    Log($"Manual fallback applied. Total mapped: {volumeMap.Count} chapters.");
+                }
             }
 
             Log($"{cbzFiles.Length} file(s) found. Starting organization...");
@@ -527,7 +659,19 @@ namespace MangaManager
                         volumeMap.TryGetValue(chapterNum, out volNum);
 
                     if (volNum == null && chapterNum.Contains('.'))
+                    {
+                        // Tenta "1.1" → "1" e também "1.10" → "1.1"
                         volumeMap.TryGetValue(chapterNum.Split('.')[0], out volNum);
+                        if (volNum == null)
+                        {
+                            // Tenta remover zeros à direita do decimal: "1.10" → "1.1"
+                            if (decimal.TryParse(chapterNum, System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture, out decimal d))
+                            {
+                                volumeMap.TryGetValue(d.ToString("G", System.Globalization.CultureInfo.InvariantCulture), out volNum);
+                            }
+                        }
+                    }
 
                     if (volNum == null || volNum == "0")
                     {
@@ -571,8 +715,10 @@ namespace MangaManager
                     });
                 }
 
-                Dispatcher.Invoke(() =>
-                    Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched."));
+                Dispatcher.Invoke(() => {
+                    Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched.");
+                    RefreshSelectedStatus();
+                });
             });
         }
 
@@ -664,6 +810,7 @@ namespace MangaManager
             });
 
             Log("Extraction complete.");
+            RefreshSelectedStatus();
         }
 
         // ==============================
@@ -682,7 +829,7 @@ namespace MangaManager
                 return;
             }
 
-            string mangaName = MangaList.SelectedItem?.ToString() ?? "";
+            string mangaName = (MangaList.SelectedItem as MangaItem)?.Name ?? "";
             var volumes = Directory.GetDirectories(path, "Volume *");
             int generated = 0;
 
@@ -712,6 +859,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
 
             Log($"ComicInfo generated for {generated} chapter(s).");
+            RefreshSelectedStatus();
         }
 
         // ==============================
@@ -761,11 +909,110 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
 
             Log($"Cleanup done. {moved} file(s) moved to /CBZ, {skipped} skipped.");
+            RefreshSelectedStatus();
         }
 
         // ==============================
         // 🔄 OTHER
         // ==============================
+        private void UpdateButtonStates(string mangaPath)
+        {
+            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+
+            bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
+            bool hasChapters = volumes.Length > 0 &&
+                               volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
+            bool hasImages = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    Directory.GetFiles(ch, "*.jpg").Length > 0 ||
+                    Directory.GetFiles(ch, "*.png").Length > 0 ||
+                    Directory.GetFiles(ch, "*.webp").Length > 0));
+            bool hasComicInfo = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
+            bool cleaned = volumes.Length > 0 &&
+                           !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+
+            // Fetch Author: sempre habilitado
+            BtnFetchAuthor.IsEnabled = true;
+            SetCheck(BtnFetchAuthor, hasAuthor);
+
+            // Organize: sempre habilitado (pode ter CBZ sem autor preenchido)
+            BtnOrganize.IsEnabled = true;
+            SetCheck(BtnOrganize, hasChapters);
+
+            // Extract: só após organizar
+            BtnExtract.IsEnabled = hasChapters;
+            SetCheck(BtnExtract, hasImages);
+
+            // ComicInfo: só após extrair
+            BtnComicInfo.IsEnabled = hasImages;
+            SetCheck(BtnComicInfo, hasComicInfo);
+
+            // Cleanup: só após ComicInfo
+            BtnCleanup.IsEnabled = hasComicInfo;
+            SetCheck(BtnCleanup, cleaned);
+        }
+
+        // Busca o primeiro TextBlock com Text="✔ " dentro do botão e alterna visibilidade
+        private void SetCheck(System.Windows.Controls.Button btn, bool done)
+        {
+            btn.ApplyTemplate();
+            var tb = FindCheckTextBlock(btn);
+            if (tb != null)
+                tb.Visibility = done ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private System.Windows.Controls.TextBlock? FindCheckTextBlock(System.Windows.DependencyObject parent)
+        {
+            int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is System.Windows.Controls.TextBlock tb && tb.Text == "✔ ")
+                    return tb;
+                var result = FindCheckTextBlock(child);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private void RefreshSelectedStatus()
+        {
+            if (MangaList.SelectedItem is not MangaItem selected) return;
+            string fullPath = Path.Combine(basePath, selected.Name);
+            var updated = BuildMangaItem(selected.Name, fullPath);
+
+            selected.StatusColor = updated.StatusColor;
+            selected.StatusForeground = updated.StatusForeground;
+            selected.StatusWeight = updated.StatusWeight;
+            selected.Chk1 = updated.Chk1;
+            selected.Chk2 = updated.Chk2;
+            selected.Chk3 = updated.Chk3;
+            selected.Chk4 = updated.Chk4;
+            selected.Chk5 = updated.Chk5;
+
+            UpdateButtonStates(fullPath);
+        }
+
+        private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path != null)
+                UpdateButtonStates(path);
+            else
+                ResetButtonStates();
+        }
+
+        private void ResetButtonStates()
+        {
+            BtnFetchAuthor.IsEnabled = true;
+            BtnOrganize.IsEnabled = true;
+            BtnExtract.IsEnabled = false;
+            BtnComicInfo.IsEnabled = false;
+            BtnCleanup.IsEnabled = false;
+        }
+
         private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMangas();
 
         private void Log(string msg)
