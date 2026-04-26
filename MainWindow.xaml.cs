@@ -91,7 +91,7 @@ namespace MangaManager
             int completed = 0;
 
             // 1. Volumes criados
-            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
             if (volumes.Length == 0)
             {
                 tip = "❌ No volume folders found";
@@ -161,9 +161,9 @@ namespace MangaManager
 
         private MangaItem BuildMangaItem(string name, string fullPath)
         {
-            var volumes = Directory.GetDirectories(fullPath, "Volume *");
+            var volumes = Directory.GetDirectories(fullPath, "* - Volume *");
 
-            bool s1 = Directory.GetDirectories(fullPath, "Volume *").Length > 0; // volumes criados
+            bool s1 = Directory.GetDirectories(fullPath, "* - Volume *").Length > 0; // volumes criados
             bool s2 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
             bool s3 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         Directory.GetFiles(ch, "*.jpg").Length > 0 ||
@@ -317,7 +317,7 @@ namespace MangaManager
                         int created = 0;
                         for (int i = 1; i <= info.Volumes; i++)
                         {
-                            string volPath = Path.Combine(path, $"Volume {i:D2}");
+                            string volPath = Path.Combine(path, $"{title} - Volume {i:D2}");
                             if (!Directory.Exists(volPath))
                             {
                                 Directory.CreateDirectory(volPath);
@@ -681,7 +681,7 @@ namespace MangaManager
                         continue;
                     }
 
-                    string volFolder = $"Volume {int.Parse(volNum):D2}";
+                    string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
                     string volPath = Path.Combine(path, volFolder);
                     Directory.CreateDirectory(volPath);
 
@@ -741,7 +741,7 @@ namespace MangaManager
 
             await Task.Run(() =>
             {
-                var volumes = Directory.GetDirectories(path, "Volume *").OrderBy(x => x).ToArray();
+                var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
                 int total = volumes.Sum(v => Directory.GetFiles(v, "*.cbz").Length);
 
                 if (total == 0)
@@ -830,7 +830,7 @@ namespace MangaManager
             }
 
             string mangaName = (MangaList.SelectedItem as MangaItem)?.Name ?? "";
-            var volumes = Directory.GetDirectories(path, "Volume *");
+            var volumes = Directory.GetDirectories(path, "* - Volume *");
             int generated = 0;
 
             foreach (var vol in volumes)
@@ -917,7 +917,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         // ==============================
         private void UpdateButtonStates(string mangaPath)
         {
-            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
 
             bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
             bool hasChapters = volumes.Length > 0 &&
@@ -997,11 +997,15 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
         private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
-            var path = GetSelectedPath();
-            if (path != null)
-                UpdateButtonStates(path);
+            if (MangaList.SelectedItem is MangaItem selected)
+            {
+                string fullPath = Path.Combine(basePath, selected.Name);
+                UpdateButtonStates(fullPath);
+            }
             else
+            {
                 ResetButtonStates();
+            }
         }
 
         private void ResetButtonStates()
