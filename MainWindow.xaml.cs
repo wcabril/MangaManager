@@ -841,9 +841,9 @@ namespace MangaManager
                             continue;
                         }
 
-                        string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
-                        string volPath = Path.Combine(path, volFolder);
-                        Directory.CreateDirectory(volPath);
+                    string volFolder = $"Volume {int.Parse(volNum):D2}";
+                    string volPath = Path.Combine(path, volFolder);
+                    Directory.CreateDirectory(volPath);
 
                         string chFormatted = chapterNum.Contains('.')
                             ? $"Capitulo {chapterNum.PadLeft(6, '0')}"
@@ -1083,14 +1083,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         // ==============================
         private void UpdateButtonStates(string mangaPath)
         {
-            // Garante execução na UI thread
-            if (!Dispatcher.CheckAccess())
-            {
-                Dispatcher.Invoke(() => UpdateButtonStates(mangaPath));
-                return;
-            }
-
-            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
+            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
 
             bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
             bool hasChapters = volumes.Length > 0 &&
