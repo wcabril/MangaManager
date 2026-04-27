@@ -69,6 +69,7 @@ namespace MangaManager
             private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
                            _statusWeight = "Normal", _statusTip = "",
                            _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "";
+            private System.Windows.Media.ImageSource? _coverImage;
 
             public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
             public string StatusColor { get => _statusColor; set { _statusColor = value; OnChanged(nameof(StatusColor)); } }
@@ -80,6 +81,7 @@ namespace MangaManager
             public string Chk3 { get => _chk3; set { _chk3 = value; OnChanged(nameof(Chk3)); } }
             public string Chk4 { get => _chk4; set { _chk4 = value; OnChanged(nameof(Chk4)); } }
             public string Chk5 { get => _chk5; set { _chk5 = value; OnChanged(nameof(Chk5)); } }
+            public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
         }
 
         private enum MangaStatus { None, Partial, Complete }
@@ -91,7 +93,7 @@ namespace MangaManager
             int completed = 0;
 
             // 1. Volumes criados
-            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
             if (volumes.Length == 0)
             {
                 tip = "❌ No volume folders found";
@@ -133,7 +135,7 @@ namespace MangaManager
             return MangaStatus.None;
         }
 
-        private void LoadMangas()
+        private async void LoadMangas()
         {
             MangaList.Items.Clear();
 
@@ -149,29 +151,44 @@ namespace MangaManager
                                 .OrderBy(x => x)
                                 .ToArray();
 
+            var tasks = new List<Task>();
             foreach (var name in dirs)
             {
                 string fullPath = Path.Combine(basePath, name!);
                 var item = BuildMangaItem(name!, fullPath);
                 MangaList.Items.Add(item);
+                tasks.Add(LoadCoverAsync(item, fullPath));
             }
 
-            Log($"{MangaList.Items.Count} manga(s) found.");
+            Log($"{MangaList.Items.Count} manga(s) found. Loading covers...");
+
+            // Carrega capas em background sem bloquear a UI
+            _ = Task.WhenAll(tasks).ContinueWith(_ =>
+                Dispatcher.Invoke(() => Log("Covers loaded.")));
         }
 
         private MangaItem BuildMangaItem(string name, string fullPath)
         {
-            var volumes = Directory.GetDirectories(fullPath, "Volume *");
+            var volumes = Directory.GetDirectories(fullPath, "* - Volume *");
 
-            bool s1 = Directory.GetDirectories(fullPath, "Volume *").Length > 0; // volumes criados
-            bool s2 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
-            bool s3 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+            // S1 — Fetch Author: volumes criados (proxy — autor não é verificável via pasta)
+            bool s1 = volumes.Length > 0;
+
+            // S2 — Organize: pastas Capitulo dentro dos volumes
+            bool s2 = s1 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
+
+            // S3 — Extract: imagens dentro dos capítulos
+            bool s3 = s2 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         Directory.GetFiles(ch, "*.jpg").Length > 0 ||
                         Directory.GetFiles(ch, "*.png").Length > 0 ||
                         Directory.GetFiles(ch, "*.webp").Length > 0));
-            bool s4 = volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+
+            // S4 — ComicInfo: arquivo ComicInfo.xml dentro dos capítulos
+            bool s4 = s3 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
-            bool s5 = volumes.Length > 0 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+
+            // S5 — Cleanup: sem CBZ soltos dentro dos volumes
+            bool s5 = s4 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
 
             bool complete = s1 && s2 && s3 && s4 && s5;
 
@@ -201,7 +218,148 @@ namespace MangaManager
         }
 
         // ==============================
-        // 🔍 ANILIST
+        // 🖼 COVER IMAGE
+        // ==============================
+        private async Task LoadCoverAsync(MangaItem item, string mangaPath)
+        {
+            // 1. Tenta local
+            string localCover = Path.Combine(mangaPath, "cover.jpg");
+            if (File.Exists(localCover))
+            {
+                item.CoverImage = LoadImageFromFile(localCover);
+                return;
+            }
+
+            // 2. Tenta AniList
+            string? url = await GetCoverFromAniList(item.Name);
+
+            // 3. Fallback MangaDex
+            if (url == null)
+                url = await GetCoverFromMangaDex(item.Name);
+
+            if (url != null)
+            {
+                var bytes = await DownloadImageBytes(url);
+                if (bytes != null)
+                {
+                    await File.WriteAllBytesAsync(localCover, bytes);
+                    item.CoverImage = LoadImageFromBytes(bytes);
+                    return;
+                }
+            }
+
+            // 4. Fallback: abre diálogo para escolher localmente
+            Dispatcher.Invoke(() =>
+            {
+                var dialog = new WinForms.OpenFileDialog
+                {
+                    Title = $"Select cover for {item.Name}",
+                    Filter = "Images|*.jpg;*.jpeg;*.png;*.webp"
+                };
+
+                if (dialog.ShowDialog() == WinForms.DialogResult.OK)
+                {
+                    File.Copy(dialog.FileName, localCover, overwrite: true);
+                    item.CoverImage = LoadImageFromFile(localCover);
+                }
+            });
+        }
+
+        private System.Windows.Media.ImageSource? LoadImageFromFile(string path)
+        {
+            try
+            {
+                var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                bmp.BeginInit();
+                bmp.UriSource = new Uri(path, UriKind.Absolute);
+                bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+            catch { return null; }
+        }
+
+        private System.Windows.Media.ImageSource? LoadImageFromBytes(byte[] bytes)
+        {
+            try
+            {
+                var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                using var ms = new MemoryStream(bytes);
+                bmp.BeginInit();
+                bmp.StreamSource = ms;
+                bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+            catch { return null; }
+        }
+
+        private async Task<byte[]?> DownloadImageBytes(string url)
+        {
+            try
+            {
+                using var client = new HttpClient();
+                return await client.GetByteArrayAsync(url);
+            }
+            catch { return null; }
+        }
+
+        private async Task<string?> GetCoverFromAniList(string title)
+        {
+            try
+            {
+                using var client = new HttpClient();
+                var query = @"query ($search: String) {
+                  Media (search: $search, type: MANGA) {
+                    coverImage { large }
+                  }
+                }";
+
+                var json = JsonSerializer.Serialize(new { query, variables = new { search = title } });
+                var resp = await client.PostAsync("https://graphql.anilist.co",
+                    new StringContent(json, Encoding.UTF8, "application/json"));
+                var str = await resp.Content.ReadAsStringAsync();
+
+                using var doc = JsonDocument.Parse(str);
+                return doc.RootElement
+                    .GetProperty("data").GetProperty("Media")
+                    .GetProperty("coverImage").GetProperty("large")
+                    .GetString();
+            }
+            catch { return null; }
+        }
+
+        private async Task<string?> GetCoverFromMangaDex(string title)
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Add("User-Agent", "MangaManager/1.0");
+
+                var searchUrl = $"https://api.mangadex.org/manga?title={Uri.EscapeDataString(title)}&limit=1&includes[]=cover_art";
+                var resp = await client.GetStringAsync(searchUrl);
+                using var doc = JsonDocument.Parse(resp);
+
+                var data = doc.RootElement.GetProperty("data");
+                if (data.GetArrayLength() == 0) return null;
+
+                var manga = data[0];
+                var mangaId = manga.GetProperty("id").GetString();
+
+                foreach (var rel in manga.GetProperty("relationships").EnumerateArray())
+                {
+                    if (rel.GetProperty("type").GetString() == "cover_art")
+                    {
+                        var fileName = rel.GetProperty("attributes").GetProperty("fileName").GetString();
+                        return $"https://uploads.mangadex.org/covers/{mangaId}/{fileName}.256.jpg";
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
         // ==============================
         private record AniListInfo(string? Author, int? Volumes);
 
@@ -317,7 +475,7 @@ namespace MangaManager
                         int created = 0;
                         for (int i = 1; i <= info.Volumes; i++)
                         {
-                            string volPath = Path.Combine(path, $"Volume {i:D2}");
+                            string volPath = Path.Combine(path, $"{title} - Volume {i:D2}");
                             if (!Directory.Exists(volPath))
                             {
                                 Directory.CreateDirectory(volPath);
@@ -540,186 +698,194 @@ namespace MangaManager
         // ==============================
         private async void OrganizeMangaDex_Click(object sender, RoutedEventArgs e)
         {
-            var path = GetSelectedPath();
-            if (path == null) return;
-
-            if (!File.Exists(zipPath))
+            try
             {
-                Log($"7-Zip not found at: {zipPath}");
-                return;
-            }
+                var path = GetSelectedPath();
+                if (path == null) return;
 
-            var cbzFiles = Directory.GetFiles(path, "*.cbz").OrderBy(x => x).ToArray();
-            if (cbzFiles.Length == 0)
-            {
-                Log("No .cbz files found in manga folder.");
-                return;
-            }
-
-            string title = (MangaList.SelectedItem as MangaItem)!.Name;
-            Dictionary<string, string> volumeMap;
-
-            Log("[1/3] Searching MangaDex...");
-            volumeMap = await GetVolumeMapFromMangaDex(title);
-
-            if (volumeMap.Count == 0)
-            {
-                Log("[2/3] MangaDex empty. Trying MangaUpdates...");
-                volumeMap = await GetVolumeMapFromMangaUpdates(title);
-            }
-
-            if (volumeMap.Count == 0)
-            {
-                Log("[3/3] No data found. Using manual distribution...");
-
-                string input = Microsoft.VisualBasic.Interaction.InputBox(
-                    "Could not fetch chapter map automatically.\n\nHow many chapters per volume?",
-                    "Manual Distribution",
-                    "5");
-
-                if (!int.TryParse(input, out int chapPerVol) || chapPerVol <= 0)
+                if (!File.Exists(zipPath))
                 {
-                    Log("Operation cancelled.");
+                    Log($"7-Zip not found at: {zipPath}");
                     return;
                 }
 
-                volumeMap = BuildManualMap(cbzFiles, chapPerVol);
-                Log($"Manual map: {volumeMap.Count} chapters, {chapPerVol} per volume.");
-            }
-
-            // Se o mapa não cobriu todos os arquivos, pergunta sobre fallback manual para os restantes
-            if (volumeMap.Count > 0 && volumeMap.Count < cbzFiles.Length)
-            {
-                Log($"⚠ {volumeMap.Count} of {cbzFiles.Length} chapters mapped. Some chapters may be missing from the source.");
-
-                string input = Microsoft.VisualBasic.Interaction.InputBox(
-                    $"The source only mapped {volumeMap.Count} of {cbzFiles.Length} chapters.\n\n" +
-                    "For unmatched chapters, how many chapters per volume?\n(Leave empty to skip unmatched files)",
-                    "Partial Map — Manual Fallback",
-                    "5");
-
-                if (int.TryParse(input, out int chapPerVol) && chapPerVol > 0)
+                var cbzFiles = Directory.GetFiles(path, "*.cbz").OrderBy(x => x).ToArray();
+                if (cbzFiles.Length == 0)
                 {
-                    // Adiciona ao mapa apenas os capítulos que ainda não estão mapeados
-                    var manualMap = BuildManualMap(cbzFiles, chapPerVol);
-                    foreach (var kvp in manualMap)
-                        volumeMap.TryAdd(kvp.Key, kvp.Value);
-
-                    Log($"Manual fallback applied. Total mapped: {volumeMap.Count} chapters.");
+                    Log("No .cbz files found in manga folder.");
+                    return;
                 }
-            }
 
-            Log($"{cbzFiles.Length} file(s) found. Starting organization...");
-            ProgressBar.Value = 0;
-            ProgressText.Text = "";
+                string title = (MangaList.SelectedItem as MangaItem)!.Name;
+                Dictionary<string, string> volumeMap;
 
-            await Task.Run(() =>
-            {
-                int total = cbzFiles.Length;
-                int current = 0;
-                int unmatched = 0;
+                Log("[1/3] Searching MangaDex...");
+                volumeMap = await GetVolumeMapFromMangaDex(title);
 
-                foreach (var cbz in cbzFiles)
+                if (volumeMap.Count == 0)
                 {
-                    string fileName = Path.GetFileNameWithoutExtension(cbz);
+                    Log("[2/3] MangaDex empty. Trying MangaUpdates...");
+                    volumeMap = await GetVolumeMapFromMangaUpdates(title);
+                }
 
-                    var volMatch = System.Text.RegularExpressions.Regex.Match(
-                        fileName,
-                        @"[Vv]ol\.?\s*(\d+)",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (volumeMap.Count == 0)
+                {
+                    Log("[3/3] No data found. Using manual distribution...");
 
-                    var chMatch = System.Text.RegularExpressions.Regex.Match(
-                        fileName,
-                        @"(?:cap[ií]tulo|capitulo|cap\.?|chapter|ch\.?)\s*(\d+(?:\.\d+)?)",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    string input = Microsoft.VisualBasic.Interaction.InputBox(
+                        "Could not fetch chapter map automatically.\n\nHow many chapters per volume?",
+                        "Manual Distribution",
+                        "5");
 
-                    if (!chMatch.Success)
-                        chMatch = System.Text.RegularExpressions.Regex.Match(fileName, @"(\d+(?:\.\d+)?)");
-
-                    if (!chMatch.Success)
+                    if (!int.TryParse(input, out int chapPerVol) || chapPerVol <= 0)
                     {
-                        Dispatcher.Invoke(() => Log($"⚠ Not recognized: {Path.GetFileName(cbz)}"));
-                        unmatched++;
-                        current++;
-                        continue;
+                        Log("Operation cancelled.");
+                        return;
                     }
 
-                    string chapterNum = chMatch.Groups[1].Value.TrimStart('0');
-                    if (string.IsNullOrEmpty(chapterNum)) chapterNum = "0";
+                    volumeMap = BuildManualMap(cbzFiles, chapPerVol);
+                    Log($"Manual map: {volumeMap.Count} chapters, {chapPerVol} per volume.");
+                }
 
-                    string? volNum = null;
+                // Se o mapa não cobriu todos os arquivos, pergunta sobre fallback manual para os restantes
+                if (volumeMap.Count > 0 && volumeMap.Count < cbzFiles.Length)
+                {
+                    Log($"⚠ {volumeMap.Count} of {cbzFiles.Length} chapters mapped. Some chapters may be missing from the source.");
 
-                    if (volMatch.Success)
+                    string input = Microsoft.VisualBasic.Interaction.InputBox(
+                        $"The source only mapped {volumeMap.Count} of {cbzFiles.Length} chapters.\n\n" +
+                        "For unmatched chapters, how many chapters per volume?\n(Leave empty to skip unmatched files)",
+                        "Partial Map — Manual Fallback",
+                        "5");
+
+                    if (int.TryParse(input, out int chapPerVol) && chapPerVol > 0)
                     {
-                        volNum = volMatch.Groups[1].Value.TrimStart('0');
-                        if (string.IsNullOrEmpty(volNum)) volNum = "1";
+                        // Adiciona ao mapa apenas os capítulos que ainda não estão mapeados
+                        var manualMap = BuildManualMap(cbzFiles, chapPerVol);
+                        foreach (var kvp in manualMap)
+                            volumeMap.TryAdd(kvp.Key, kvp.Value);
+
+                        Log($"Manual fallback applied. Total mapped: {volumeMap.Count} chapters.");
                     }
+                }
 
-                    if (volNum == null)
-                        volumeMap.TryGetValue(chapterNum, out volNum);
+                Log($"{cbzFiles.Length} file(s) found. Starting organization...");
+                ProgressBar.Value = 0;
+                ProgressText.Text = "";
 
-                    if (volNum == null && chapterNum.Contains('.'))
+                await Task.Run(() =>
+                {
+                    int total = cbzFiles.Length;
+                    int current = 0;
+                    int unmatched = 0;
+
+                    foreach (var cbz in cbzFiles)
                     {
-                        // Tenta "1.1" → "1" e também "1.10" → "1.1"
-                        volumeMap.TryGetValue(chapterNum.Split('.')[0], out volNum);
-                        if (volNum == null)
+                        string fileName = Path.GetFileNameWithoutExtension(cbz);
+
+                        var volMatch = System.Text.RegularExpressions.Regex.Match(
+                            fileName,
+                            @"[Vv]ol\.?\s*(\d+)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                        var chMatch = System.Text.RegularExpressions.Regex.Match(
+                            fileName,
+                            @"(?:cap[ií]tulo|capitulo|cap\.?|chapter|ch\.?)\s*(\d+(?:\.\d+)?)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                        if (!chMatch.Success)
+                            chMatch = System.Text.RegularExpressions.Regex.Match(fileName, @"(\d+(?:\.\d+)?)");
+
+                        if (!chMatch.Success)
                         {
-                            // Tenta remover zeros à direita do decimal: "1.10" → "1.1"
-                            if (decimal.TryParse(chapterNum, System.Globalization.NumberStyles.Any,
-                                System.Globalization.CultureInfo.InvariantCulture, out decimal d))
+                            Dispatcher.Invoke(() => Log($"⚠ Not recognized: {Path.GetFileName(cbz)}"));
+                            unmatched++;
+                            current++;
+                            continue;
+                        }
+
+                        string chapterNum = chMatch.Groups[1].Value.TrimStart('0');
+                        if (string.IsNullOrEmpty(chapterNum)) chapterNum = "0";
+
+                        string? volNum = null;
+
+                        if (volMatch.Success)
+                        {
+                            volNum = volMatch.Groups[1].Value.TrimStart('0');
+                            if (string.IsNullOrEmpty(volNum)) volNum = "1";
+                        }
+
+                        if (volNum == null)
+                            volumeMap.TryGetValue(chapterNum, out volNum);
+
+                        if (volNum == null && chapterNum.Contains('.'))
+                        {
+                            // Tenta "1.1" → "1" e também "1.10" → "1.1"
+                            volumeMap.TryGetValue(chapterNum.Split('.')[0], out volNum);
+                            if (volNum == null)
                             {
-                                volumeMap.TryGetValue(d.ToString("G", System.Globalization.CultureInfo.InvariantCulture), out volNum);
+                                // Tenta remover zeros à direita do decimal: "1.10" → "1.1"
+                                if (decimal.TryParse(chapterNum, System.Globalization.NumberStyles.Any,
+                                    System.Globalization.CultureInfo.InvariantCulture, out decimal d))
+                                {
+                                    volumeMap.TryGetValue(d.ToString("G", System.Globalization.CultureInfo.InvariantCulture), out volNum);
+                                }
                             }
                         }
-                    }
 
-                    if (volNum == null || volNum == "0")
-                    {
-                        Dispatcher.Invoke(() => Log($"⚠ Volume not found for chapter {chapterNum}: {Path.GetFileName(cbz)}"));
-                        unmatched++;
+                        if (volNum == null || volNum == "0")
+                        {
+                            Dispatcher.Invoke(() => Log($"⚠ Volume not found for chapter {chapterNum}: {Path.GetFileName(cbz)}"));
+                            unmatched++;
+                            current++;
+                            continue;
+                        }
+
+                        string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
+                        string volPath = Path.Combine(path, volFolder);
+                        Directory.CreateDirectory(volPath);
+
+                        string chFormatted = chapterNum.Contains('.')
+                            ? $"Capitulo {chapterNum.PadLeft(6, '0')}"
+                            : $"Capitulo {int.Parse(chapterNum):D3}";
+
+                        string chDest = Path.Combine(volPath, chFormatted);
+                        Directory.CreateDirectory(chDest);
+
+                        string cbzDest = Path.Combine(volPath, Path.GetFileName(cbz));
+                        if (!File.Exists(cbzDest))
+                            File.Move(cbz, cbzDest);
+
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = zipPath,
+                            Arguments = $"x \"{cbzDest}\" -o\"{chDest}\" -y",
+                            CreateNoWindow = true,
+                            UseShellExecute = false
+                        };
+
+                        Process.Start(psi)?.WaitForExit();
                         current++;
-                        continue;
+
+                        Dispatcher.Invoke(() =>
+                        {
+                            ProgressBar.Value = (double)current / total * 100;
+                            ProgressText.Text = $"{current} / {total}";
+                            Log($"✓ Ch {chapterNum} → {volFolder}\\{chFormatted}");
+                        });
                     }
 
-                    string volFolder = $"Volume {int.Parse(volNum):D2}";
-                    string volPath = Path.Combine(path, volFolder);
-                    Directory.CreateDirectory(volPath);
-
-                    string chFormatted = chapterNum.Contains('.')
-                        ? $"Capitulo {chapterNum.PadLeft(6, '0')}"
-                        : $"Capitulo {int.Parse(chapterNum):D3}";
-
-                    string chDest = Path.Combine(volPath, chFormatted);
-                    Directory.CreateDirectory(chDest);
-
-                    string cbzDest = Path.Combine(volPath, Path.GetFileName(cbz));
-                    if (!File.Exists(cbzDest))
-                        File.Move(cbz, cbzDest);
-
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = zipPath,
-                        Arguments = $"x \"{cbzDest}\" -o\"{chDest}\" -y",
-                        CreateNoWindow = true,
-                        UseShellExecute = false
-                    };
-
-                    Process.Start(psi)?.WaitForExit();
-                    current++;
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        ProgressBar.Value = (double)current / total * 100;
-                        ProgressText.Text = $"{current} / {total}";
-                        Log($"✓ Ch {chapterNum} → {volFolder}\\{chFormatted}");
+                    Dispatcher.Invoke(() => {
+                        Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched.");
+                        RefreshSelectedStatus();
                     });
-                }
-
-                Dispatcher.Invoke(() => {
-                    Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched.");
-                    RefreshSelectedStatus();
                 });
-            });
+            }
+            catch (Exception ex)
+            {
+                Log($"Critical error in Organize: {ex.Message}");
+                MessageBox.Show($"Error:\n{ex.Message}\n\n{ex.StackTrace}", "Organize Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // ==============================
@@ -741,7 +907,7 @@ namespace MangaManager
 
             await Task.Run(() =>
             {
-                var volumes = Directory.GetDirectories(path, "Volume *").OrderBy(x => x).ToArray();
+                var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
                 int total = volumes.Sum(v => Directory.GetFiles(v, "*.cbz").Length);
 
                 if (total == 0)
@@ -830,7 +996,7 @@ namespace MangaManager
             }
 
             string mangaName = (MangaList.SelectedItem as MangaItem)?.Name ?? "";
-            var volumes = Directory.GetDirectories(path, "Volume *");
+            var volumes = Directory.GetDirectories(path, "* - Volume *");
             int generated = 0;
 
             foreach (var vol in volumes)
@@ -917,7 +1083,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         // ==============================
         private void UpdateButtonStates(string mangaPath)
         {
-            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            // Garante execução na UI thread
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(() => UpdateButtonStates(mangaPath));
+                return;
+            }
+
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
 
             bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
             bool hasChapters = volumes.Length > 0 &&
@@ -979,6 +1152,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
         private void RefreshSelectedStatus()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(RefreshSelectedStatus);
+                return;
+            }
+
             if (MangaList.SelectedItem is not MangaItem selected) return;
             string fullPath = Path.Combine(basePath, selected.Name);
             var updated = BuildMangaItem(selected.Name, fullPath);
@@ -997,11 +1176,15 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
         private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
-            var path = GetSelectedPath();
-            if (path != null)
-                UpdateButtonStates(path);
+            if (MangaList.SelectedItem is MangaItem selected)
+            {
+                string fullPath = Path.Combine(basePath, selected.Name);
+                UpdateButtonStates(fullPath);
+            }
             else
+            {
                 ResetButtonStates();
+            }
         }
 
         private void ResetButtonStates()
@@ -1011,6 +1194,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
+        }
+
+        private void MangaList_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        {
+            MangaScrollViewer.ScrollToVerticalOffset(MangaScrollViewer.VerticalOffset - e.Delta);
+            e.Handled = true;
         }
 
         private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMangas();

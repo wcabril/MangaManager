@@ -1,12 +1,27 @@
 ﻿<Window x:Class="MangaManager.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Manga Manager" Height="580" Width="1100"
+        Title="Manga Manager" Height="680" Width="1300"
         Background="#1E1E1E">
 
     <Window.Resources>
+
+        <!-- Estilo dos botões com efeito de clique -->
         <Style TargetType="Button">
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                </Setter.Value>
+            </Setter>
             <Style.Triggers>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="RenderTransform">
+                        <Setter.Value>
+                            <ScaleTransform ScaleX="0.97" ScaleY="0.97"/>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="0.35"/>
                     <Setter Property="Cursor" Value="No"/>
@@ -16,6 +31,34 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <!-- Card de mangá -->
+        <Style x:Key="MangaCardStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="CardBorder" Background="#2D2D2D" CornerRadius="6"
+                                BorderBrush="#444" BorderThickness="1" Padding="0">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="#888"/>
+                                <Setter TargetName="CardBorder" Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="#666"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
     </Window.Resources>
 
     <Grid Margin="10">
@@ -27,10 +70,9 @@
         <!-- PASTA BASE -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
             <TextBlock Text="Folder:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox x:Name="BasePathBox" Width="620" IsReadOnly="True" VerticalAlignment="Center"
+            <TextBox x:Name="BasePathBox" Width="900" IsReadOnly="True" VerticalAlignment="Center"
                      Background="#2D2D2D" Foreground="White" BorderBrush="#555"/>
-            <Button Content="Select Folder" Click="SelectFolder_Click"
-                    Margin="8,0,0,0" Padding="10,4"/>
+            <Button Content="Select Folder" Click="SelectFolder_Click" Margin="8,0,0,0" Padding="10,4"/>
         </StackPanel>
 
         <Grid Grid.Row="1">
@@ -39,39 +81,62 @@
                 <ColumnDefinition Width="2*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- LISTA -->
-            <StackPanel Grid.Column="0">
-                <TextBlock Text="Manga List" Foreground="White" FontSize="16" Margin="0,0,0,5"/>
-                <ListBox x:Name="MangaList" Height="420" Background="#2D2D2D" BorderBrush="#555"
-                         SelectionChanged="MangaList_SelectionChanged">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel Orientation="Horizontal" Background="{Binding StatusColor}">
-                                <TextBlock Text="{Binding Name}" Foreground="{Binding StatusForeground}"
-                                           FontWeight="{Binding StatusWeight}" VerticalAlignment="Center" Margin="4,2,6,2"/>
-                                <TextBlock Text="{Binding Chk1}" Foreground="#F448FA" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0"/>
-                                <TextBlock Text="{Binding Chk2}" Foreground="#0B47B1" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0"/>
-                                <TextBlock Text="{Binding Chk3}" Foreground="#F57927" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0"/>
-                                <TextBlock Text="{Binding Chk4}" Foreground="#F4F300" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0"/>
-                                <TextBlock Text="{Binding Chk5}" Foreground="#B1ED00" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0"/>
-                            </StackPanel>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-                <Button Content="Refresh List" Click="Refresh_Click" Margin="0,8,0,0" Padding="0,5"/>
-            </StackPanel>
+            <!-- GRID DE CARDS -->
+            <DockPanel Grid.Column="0">
+                <TextBlock DockPanel.Dock="Top" Text="Manga List" Foreground="White" FontSize="16" Margin="0,0,0,5"/>
+                <Button DockPanel.Dock="Bottom" Content="Refresh List" Click="Refresh_Click" Margin="0,8,0,0" Padding="0,5"/>
+                <ScrollViewer x:Name="MangaScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ListBox x:Name="MangaList" Background="Transparent" BorderThickness="0"
+                             ItemContainerStyle="{StaticResource MangaCardStyle}"
+                             SelectionChanged="MangaList_SelectionChanged"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                             PreviewMouseWheel="MangaList_PreviewMouseWheel">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" Width="740"/>
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Width="170" Margin="0">
+                                    <!-- CAPA -->
+                                    <Border Height="180" Background="#1a1a1a" CornerRadius="5,5,0,0">
+                                        <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
+                                    </Border>
+                                    <!-- NOME -->
+                                    <Border Background="{Binding StatusColor}" Padding="4,4,4,2">
+                                        <TextBlock Text="{Binding Name}" Foreground="{Binding StatusForeground}"
+                                                   FontWeight="{Binding StatusWeight}" FontSize="11"
+                                                   TextWrapping="Wrap" TextAlignment="Center" MaxHeight="36"/>
+                                    </Border>
+                                    <!-- CHECKS -->
+                                    <Border Background="#222" Padding="4,2,4,4" CornerRadius="0,0,5,5">
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                            <TextBlock Text="{Binding Chk1}" Foreground="#F448FA" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk2}" Foreground="#0B47B1" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk3}" Foreground="#F57927" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk4}" Foreground="#F4F300" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk5}" Foreground="#B1ED00" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </ScrollViewer>
+            </DockPanel>
 
             <!-- AÇÕES -->
             <StackPanel Grid.Column="1" Margin="20,0,0,0">
 
-                <!-- Author field com mesmo height dos botões -->
+                <!-- Author field -->
                 <Grid Height="32" Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <Border Grid.Column="0" Background="#3A3A3A" BorderBrush="#555" BorderThickness="1,1,0,1"
-                            Width="80" CornerRadius="0">
+                    <Border Grid.Column="0" Background="#3A3A3A" BorderBrush="#555" BorderThickness="1,1,0,1" Width="80">
                         <TextBlock Text="Author" Foreground="#AAAAAA" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="12"/>
                     </Border>
                     <TextBox x:Name="AuthorBox" Grid.Column="1"
@@ -88,13 +153,19 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#F448FA"/>
-                                <Border Grid.Column="1" Background="#DDDDDD">
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
                                     <TextBlock Text="🔍  Fetch Author and Volumes (AniList)" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
+
                 <Button x:Name="BtnOrganize" Click="OrganizeMangaDex_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -104,13 +175,19 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#0B47B1"/>
-                                <Border Grid.Column="1" Background="#DDDDDD">
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
                                     <TextBlock Text="📂  Organize Chapters in Volumes" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
+
                 <Button x:Name="BtnExtract" Click="Extract_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -120,13 +197,19 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#F57927"/>
-                                <Border Grid.Column="1" Background="#DDDDDD">
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
                                     <TextBlock Text="📦  Extract CBZ" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
+
                 <Button x:Name="BtnComicInfo" Click="ComicInfo_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -136,13 +219,19 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#F4F300"/>
-                                <Border Grid.Column="1" Background="#DDDDDD">
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
                                     <TextBlock Text="📋  Generate ComicInfo" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
+
                 <Button x:Name="BtnCleanup" Click="Cleanup_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -152,10 +241,15 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#B1ED00"/>
-                                <Border Grid.Column="1" Background="#DDDDDD">
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
                                     <TextBlock Text="🧹  Cleanup CBZ Files" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
@@ -165,7 +259,7 @@
                 <TextBlock x:Name="ProgressText" Foreground="#AAAAAA" FontSize="12"/>
 
                 <!-- LOG -->
-                <TextBox x:Name="LogBox" Height="155" Margin="0,10,0,0"
+                <TextBox x:Name="LogBox" Height="220" Margin="0,10,0,0"
                          IsReadOnly="True" TextWrapping="Wrap"
                          Background="#2D2D2D" Foreground="#CCCCCC" BorderBrush="#555"
                          VerticalScrollBarVisibility="Auto"/>
