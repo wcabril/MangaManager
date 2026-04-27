@@ -190,14 +190,15 @@ namespace MangaManager
             // S5 — Cleanup: sem CBZ soltos dentro dos volumes
             bool s5 = s4 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
 
-            bool complete = s1 && s2 && s3 && s4 && s5;
+            // Verde apenas se tiver .mobi na pasta
+            bool hasMobi = Directory.GetFiles(fullPath, "*.mobi", SearchOption.AllDirectories).Length > 0;
 
             return new MangaItem
             {
                 Name = name,
-                StatusColor = complete ? "#95b634" : "Transparent",
-                StatusForeground = complete ? "#1a1a1a" : "White",
-                StatusWeight = complete ? "Bold" : "Normal",
+                StatusColor = hasMobi ? "#95b634" : "Transparent",
+                StatusForeground = hasMobi ? "#1a1a1a" : "White",
+                StatusWeight = hasMobi ? "Bold" : "Normal",
                 Chk1 = s1 ? "✔" : "",
                 Chk2 = s2 ? "✔" : "",
                 Chk3 = s3 ? "✔" : "",
@@ -841,9 +842,9 @@ namespace MangaManager
                             continue;
                         }
 
-                    string volFolder = $"Volume {int.Parse(volNum):D2}";
-                    string volPath = Path.Combine(path, volFolder);
-                    Directory.CreateDirectory(volPath);
+                        string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
+                        string volPath = Path.Combine(path, volFolder);
+                        Directory.CreateDirectory(volPath);
 
                         string chFormatted = chapterNum.Contains('.')
                             ? $"Capitulo {chapterNum.PadLeft(6, '0')}"
@@ -1079,11 +1080,139 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         }
 
         // ==============================
+        // ==============================
+        // 📱 SEND TO KINDLE
+        // ==============================
+        private string? FindKindlePath()
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType != DriveType.Removable && drive.DriveType != DriveType.Fixed)
+                    continue;
+
+                try
+                {
+                    if (!drive.IsReady) continue;
+
+                    // Kindle Fire / Paperwhite via USB
+                    string[] kindlePaths = {
+                        Path.Combine(drive.RootDirectory.FullName, "documents"),
+                        Path.Combine(drive.RootDirectory.FullName, "Books"),
+                        Path.Combine(drive.RootDirectory.FullName, "Kindle", "documents"),
+                    };
+
+                    // Verifica marcadores típicos do Kindle
+                    string[] kindleMarkers = {
+                        Path.Combine(drive.RootDirectory.FullName, "system"),
+                        Path.Combine(drive.RootDirectory.FullName, "documents"),
+                    };
+
+                    bool looksLikeKindle = kindleMarkers.Any(Directory.Exists) &&
+                                           drive.VolumeLabel.ToLower().Contains("kindle");
+
+                    // Se não tem label "kindle", verifica pela estrutura de pastas
+                    if (!looksLikeKindle)
+                        looksLikeKindle = kindlePaths.Any(Directory.Exists);
+
+                    if (looksLikeKindle)
+                    {
+                        var docsPath = kindlePaths.FirstOrDefault(Directory.Exists);
+                        if (docsPath != null)
+                            return docsPath;
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private async void SendToKindle_Click(object sender, RoutedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path == null) return;
+
+            string mangaName = (MangaList.SelectedItem as MangaItem)!.Name;
+
+            // Busca arquivos .mobi na pasta do mangá
+            var files = Directory.GetFiles(path, "*.mobi", SearchOption.AllDirectories)
+                                 .OrderBy(x => x)
+                                 .ToArray();
+
+            if (files.Length == 0)
+            {
+                Log("No .mobi files found. Please run KCC first.");
+                return;
+            }
+
+            // Detecta o Kindle
+            Log("Looking for Kindle...");
+            string? kindlePath = FindKindlePath();
+
+            if (kindlePath == null)
+            {
+                Log("Kindle not found. Make sure it's connected via USB and unlocked.");
+                MessageBox.Show(
+                    "Kindle not detected.\n\nMake sure your Kindle is:\n• Connected via USB\n• Unlocked\n• Recognized by Windows",
+                    "Kindle Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            Log($"Kindle found at: {kindlePath}");
+
+            // Destino: \documents\Mangas\<nome do mangá>\
+            string destFolder = Path.Combine(kindlePath, "Mangas", mangaName);
+            Directory.CreateDirectory(destFolder);
+            Log($"Destination: {destFolder}");
+
+            ProgressBar.Value = 0;
+            ProgressText.Text = "";
+
+            await Task.Run(() =>
+            {
+                int total = files.Length;
+                int current = 0;
+                int skipped = 0;
+
+                foreach (var file in files)
+                {
+                    string dest = Path.Combine(destFolder, Path.GetFileName(file));
+
+                    if (File.Exists(dest))
+                    {
+                        Dispatcher.Invoke(() => Log($"⚠ Already exists, skipping: {Path.GetFileName(file)}"));
+                        skipped++;
+                        current++;
+                        continue;
+                    }
+
+                    File.Copy(file, dest);
+                    current++;
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        ProgressBar.Value = (double)current / total * 100;
+                        ProgressText.Text = $"{current} / {total}";
+                        Log($"✓ {Path.GetFileName(file)}");
+                    });
+                }
+
+                Dispatcher.Invoke(() =>
+                    Log($"Done! {current - skipped} file(s) sent to Kindle, {skipped} skipped."));
+            });
+        }
+
         // 🔄 OTHER
         // ==============================
         private void UpdateButtonStates(string mangaPath)
         {
-            var volumes = Directory.GetDirectories(mangaPath, "Volume *");
+            // Garante execução na UI thread
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(() => UpdateButtonStates(mangaPath));
+                return;
+            }
+
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
 
             bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
             bool hasChapters = volumes.Length > 0 &&

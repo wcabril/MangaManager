@@ -254,6 +254,28 @@
                     </Button.Template>
                 </Button>
 
+                <Button x:Name="BtnSendToKindle" Click="SendToKindle_Click" Height="32" Margin="0,4,0,0">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#00A8E1"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                    <TextBlock Text="📱  Send to Kindle" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
                 <!-- PROGRESSO -->
                 <ProgressBar x:Name="ProgressBar" Height="18" Margin="0,14,0,4" Minimum="0" Maximum="100"/>
                 <TextBlock x:Name="ProgressText" Foreground="#AAAAAA" FontSize="12"/>
