@@ -18,10 +18,23 @@ namespace MangaManager
         string basePath = string.Empty;
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
 
+        // Constantes para detecção de USB
+        private const int WM_DEVICECHANGE = 0x0219;
+        private const int DBT_DEVICEARRIVAL = 0x8000;
+        private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
+
         public MainWindow()
         {
             InitializeComponent();
             ResetButtonStates();
+
+            // Registra o hook para detectar dispositivos USB
+            SourceInitialized += (s, e) =>
+            {
+                var source = System.Windows.Interop.HwndSource.FromHwnd(
+                    new System.Windows.Interop.WindowInteropHelper(this).Handle);
+                source?.AddHook(WndProc);
+            };
 
             var saved = Properties.Settings.Default.BasePath;
             if (!string.IsNullOrEmpty(saved) && Directory.Exists(saved))
@@ -29,6 +42,48 @@ namespace MangaManager
                 basePath = saved;
                 BasePathBox.Text = basePath;
                 LoadMangas();
+            }
+        }
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == WM_DEVICECHANGE)
+            {
+                int eventType = wParam.ToInt32();
+                if (eventType == DBT_DEVICEARRIVAL || eventType == DBT_DEVICEREMOVECOMPLETE)
+                {
+                    // Aguarda o Windows montar o drive antes de verificar
+                    Task.Delay(1500).ContinueWith(_ =>
+                        Dispatcher.Invoke(() => RefreshKindleStatus()));
+                }
+            }
+            return IntPtr.Zero;
+        }
+
+        private void RefreshKindleStatus()
+        {
+            string? kindlePath = FindKindlePath();
+            bool kindleConnected = kindlePath != null;
+
+            if (kindleConnected)
+                Log("📱 Kindle detected! Updating status...");
+            else
+                Log("📱 Kindle disconnected.");
+
+            // Atualiza o ícone 📱 em todos os cards
+            foreach (var item in MangaList.Items.OfType<MangaItem>())
+            {
+                if (kindlePath != null)
+                {
+                    string kindleDest = Path.Combine(kindlePath, "Mangas", item.Name);
+                    item.ChkKindle = Directory.Exists(kindleDest) &&
+                                     Directory.GetFiles(kindleDest, "*.mobi").Length > 0
+                                     ? "📱" : "";
+                }
+                else
+                {
+                    item.ChkKindle = "";
+                }
             }
         }
 
@@ -68,7 +123,7 @@ namespace MangaManager
 
             private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
                            _statusWeight = "Normal", _statusTip = "",
-                           _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "";
+                           _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "", _chkKindle = "";
             private System.Windows.Media.ImageSource? _coverImage;
 
             public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
@@ -81,6 +136,7 @@ namespace MangaManager
             public string Chk3 { get => _chk3; set { _chk3 = value; OnChanged(nameof(Chk3)); } }
             public string Chk4 { get => _chk4; set { _chk4 = value; OnChanged(nameof(Chk4)); } }
             public string Chk5 { get => _chk5; set { _chk5 = value; OnChanged(nameof(Chk5)); } }
+            public string ChkKindle { get => _chkKindle; set { _chkKindle = value; OnChanged(nameof(ChkKindle)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
         }
 
@@ -151,11 +207,14 @@ namespace MangaManager
                                 .OrderBy(x => x)
                                 .ToArray();
 
+            // Detecta Kindle uma vez para todos os cards
+            string? kindleDocsPath = FindKindlePath();
+
             var tasks = new List<Task>();
             foreach (var name in dirs)
             {
                 string fullPath = Path.Combine(basePath, name!);
-                var item = BuildMangaItem(name!, fullPath);
+                var item = BuildMangaItem(name!, fullPath, kindleDocsPath);
                 MangaList.Items.Add(item);
                 tasks.Add(LoadCoverAsync(item, fullPath));
             }
@@ -167,31 +226,30 @@ namespace MangaManager
                 Dispatcher.Invoke(() => Log("Covers loaded.")));
         }
 
-        private MangaItem BuildMangaItem(string name, string fullPath)
+        private MangaItem BuildMangaItem(string name, string fullPath, string? kindleDocsPath = null)
         {
             var volumes = Directory.GetDirectories(fullPath, "* - Volume *");
 
-            // S1 — Fetch Author: volumes criados (proxy — autor não é verificável via pasta)
             bool s1 = volumes.Length > 0;
-
-            // S2 — Organize: pastas Capitulo dentro dos volumes
             bool s2 = s1 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
-
-            // S3 — Extract: imagens dentro dos capítulos
             bool s3 = s2 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         Directory.GetFiles(ch, "*.jpg").Length > 0 ||
                         Directory.GetFiles(ch, "*.png").Length > 0 ||
                         Directory.GetFiles(ch, "*.webp").Length > 0));
-
-            // S4 — ComicInfo: arquivo ComicInfo.xml dentro dos capítulos
             bool s4 = s3 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
-
-            // S5 — Cleanup: sem CBZ soltos dentro dos volumes
             bool s5 = s4 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
 
-            // Verde apenas se tiver .mobi na pasta
             bool hasMobi = Directory.GetFiles(fullPath, "*.mobi", SearchOption.AllDirectories).Length > 0;
+
+            // Verifica se já está no Kindle (usa path passado para evitar múltiplas detecções)
+            bool onKindle = false;
+            if (kindleDocsPath != null)
+            {
+                string kindleDest = Path.Combine(kindleDocsPath, "Mangas", name);
+                onKindle = Directory.Exists(kindleDest) &&
+                           Directory.GetFiles(kindleDest, "*.mobi").Length > 0;
+            }
 
             return new MangaItem
             {
@@ -204,6 +262,7 @@ namespace MangaManager
                 Chk3 = s3 ? "✔" : "",
                 Chk4 = s4 ? "✔" : "",
                 Chk5 = s5 ? "✔" : "",
+                ChkKindle = onKindle ? "📱" : "",
             };
         }
 
@@ -1196,8 +1255,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     });
                 }
 
-                Dispatcher.Invoke(() =>
-                    Log($"Done! {current - skipped} file(s) sent to Kindle, {skipped} skipped."));
+                Dispatcher.Invoke(() => {
+                    Log($"Done! {current - skipped} file(s) sent to Kindle, {skipped} skipped.");
+                    RefreshSelectedStatus();
+                });
             });
         }
 
@@ -1282,7 +1343,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             if (MangaList.SelectedItem is not MangaItem selected) return;
             string fullPath = Path.Combine(basePath, selected.Name);
-            var updated = BuildMangaItem(selected.Name, fullPath);
+            var updated = BuildMangaItem(selected.Name, fullPath, FindKindlePath());
 
             selected.StatusColor = updated.StatusColor;
             selected.StatusForeground = updated.StatusForeground;
@@ -1292,6 +1353,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             selected.Chk3 = updated.Chk3;
             selected.Chk4 = updated.Chk4;
             selected.Chk5 = updated.Chk5;
+            selected.ChkKindle = updated.ChkKindle;
 
             UpdateButtonStates(fullPath);
         }
