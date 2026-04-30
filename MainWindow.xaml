@@ -118,6 +118,8 @@
                                             <TextBlock Text="{Binding Chk3}" Foreground="#F57927" FontWeight="Bold" FontSize="12" Margin="2,0"/>
                                             <TextBlock Text="{Binding Chk4}" Foreground="#F4F300" FontWeight="Bold" FontSize="12" Margin="2,0"/>
                                             <TextBlock Text="{Binding Chk5}" Foreground="#B1ED00" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk6}" Foreground="#A855F7" FontWeight="Bold" FontSize="12" Margin="2,0"/>
+                                            <TextBlock Text="{Binding Chk7}" Foreground="#E85D04" FontWeight="Bold" FontSize="12" Margin="2,0"/>
                                             <TextBlock Text="{Binding ChkKindle}" Foreground="White" FontSize="12" Margin="4,0,2,0"/>
                                         </StackPanel>
                                     </Border>
@@ -155,7 +157,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#F448FA"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="🔍  Fetch Author and Volumes (AniList)" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="🔍  Fetch Author and Volumes" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
@@ -199,7 +201,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#F57927"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="📦  Extract CBZ" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="📦  Extract" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
@@ -211,6 +213,34 @@
                     </Button.Template>
                 </Button>
 
+                <!-- RESIZE: dropdown + botão -->
+                <Grid Height="32" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="32"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="120"/>
+                    </Grid.ColumnDefinitions>
+                    <Rectangle Grid.Column="0" Fill="#A855F7"/>
+                    <ComboBox x:Name="DeviceCombo" Grid.Column="1"
+                              Background="#DDDDDD" BorderThickness="0"
+                              VerticalContentAlignment="Center" Padding="6,0"/>
+                    <Button x:Name="BtnResize" Grid.Column="2" Click="Resize_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#DDDDDD" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
+                                    <TextBlock Text="🖼  Resize Images" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
+
+                <!-- GENERATE COMICINFO -->
                 <Button x:Name="BtnComicInfo" Click="ComicInfo_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -233,6 +263,7 @@
                     </Button.Template>
                 </Button>
 
+                <!-- CLEANUP -->
                 <Button x:Name="BtnCleanup" Click="Cleanup_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -243,7 +274,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#B1ED00"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="🧹  Cleanup CBZ Files" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="🧹  Cleanup Files" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
@@ -255,7 +286,8 @@
                     </Button.Template>
                 </Button>
 
-                <Button x:Name="BtnSendToKindle" Click="SendToKindle_Click" Height="32" Margin="0,4,0,0">
+                <!-- CONVERT TO MOBI -->
+                <Button x:Name="BtnConvert" Click="Convert_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Grid>
@@ -263,9 +295,9 @@
                                     <ColumnDefinition Width="32"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <Rectangle Grid.Column="0" Fill="#00A8E1"/>
+                                <Rectangle Grid.Column="0" Fill="#E85D04"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="📱  Send to Kindle" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="📗  Convert to MOBI" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
@@ -277,9 +309,103 @@
                     </Button.Template>
                 </Button>
 
+                <!-- VOLUME SELECTOR -->
+                <StackPanel Margin="0,8,0,0">
+                    <TextBlock Text="Select which volumes you want to send to Kindle"
+                               Foreground="#AAAAAA" FontSize="11" Margin="0,0,0,4"/>
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox x:Name="ChkSendAll" Content="All" IsChecked="True"
+                                  Foreground="White" VerticalAlignment="Center"
+                                  Checked="ChkSendAll_Checked" Unchecked="ChkSendAll_Unchecked"
+                                  Margin="0,0,12,0"/>
+                        <CheckBox x:Name="ChkSendRange" Content="Range"
+                                  Foreground="White" VerticalAlignment="Center"
+                                  Checked="ChkSendRange_Checked" Unchecked="ChkSendRange_Unchecked"
+                                  Margin="0,0,8,0"/>
+                        <TextBox x:Name="VolumeRangeBox"
+                                 Width="120" IsEnabled="False"
+                                 Background="#2D2D2D" Foreground="White" BorderBrush="#555"
+                                 VerticalContentAlignment="Center" Padding="6,2"
+                                 Text="" Tag="1,2,3 or 1-6"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- SEND TO KINDLE -->
+                <Grid Height="32" Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="110"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="BtnSendToKindle" Grid.Column="0" Click="SendToKindle_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Rectangle Grid.Column="0" Fill="#00A8E1"/>
+                                    <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                        <TextBlock Text="📱  Send to Kindle" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </Grid>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <Button x:Name="BtnRemoveFromKindle" Grid.Column="1" Click="RemoveFromKindle_Click" Margin="4,0,0,0">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#DDDDDD" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
+                                    <TextBlock Text="🗑 Remove" Foreground="#CC3333" FontSize="11"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
+
                 <!-- PROGRESSO -->
-                <ProgressBar x:Name="ProgressBar" Height="18" Margin="0,14,0,4" Minimum="0" Maximum="100"/>
-                <TextBlock x:Name="ProgressText" Foreground="#AAAAAA" FontSize="12"/>
+                <Grid Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="80"/>
+                    </Grid.ColumnDefinitions>
+                    <ProgressBar x:Name="ProgressBar" Grid.Column="0" Height="18" Minimum="0" Maximum="100"/>
+                    <Button x:Name="BtnCancel" Grid.Column="1" Click="Cancel_Click"
+                            Margin="6,0,0,0" Height="18" IsEnabled="False">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#CC3333" CornerRadius="3">
+                                    <TextBlock Text="⏹ Cancel" Foreground="White" FontSize="10"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="Bd" Property="Background" Value="#555555"/>
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#AA2222"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
+                <TextBlock x:Name="ProgressText" Foreground="#AAAAAA" FontSize="12" Margin="0,2,0,0"/>
 
                 <!-- LOG -->
                 <TextBox x:Name="LogBox" Height="220" Margin="0,10,0,0"

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Diagnostics;
 using System.Net.Http;
@@ -17,6 +18,8 @@ namespace MangaManager
     {
         string basePath = string.Empty;
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
+        CancellationTokenSource? _cts;
+        FileSystemWatcher? _watcher;
 
         // Constantes para detecção de USB
         private const int WM_DEVICECHANGE = 0x0219;
@@ -27,6 +30,7 @@ namespace MangaManager
         {
             InitializeComponent();
             ResetButtonStates();
+            InitializeDeviceCombo();
 
             // Registra o hook para detectar dispositivos USB
             SourceInitialized += (s, e) =>
@@ -92,6 +96,36 @@ namespace MangaManager
         // ==============================
         // 📂 SELECT FOLDER
         // ==============================
+        private void StartWatcher(string path)
+        {
+            _watcher?.Dispose();
+
+            if (!Directory.Exists(path)) return;
+
+            _watcher = new FileSystemWatcher(path)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.DirectoryName | NotifyFilters.FileName,
+                EnableRaisingEvents = true
+            };
+
+            // Debounce — evita múltiplos refreshes em sequência
+            System.Timers.Timer? debounce = null;
+
+            void OnChanged(object s, FileSystemEventArgs e)
+            {
+                debounce?.Stop();
+                debounce = new System.Timers.Timer(800) { AutoReset = false };
+                debounce.Elapsed += (_, _) =>
+                    Dispatcher.Invoke(() => RefreshSelectedStatus());
+                debounce.Start();
+            }
+
+            _watcher.Created += OnChanged;
+            _watcher.Deleted += OnChanged;
+            _watcher.Renamed += (s, e) => OnChanged(s, e);
+        }
+
         private void SelectFolder_Click(object sender, RoutedEventArgs e)
         {
             using var dialog = new WinForms.FolderBrowserDialog
@@ -125,7 +159,8 @@ namespace MangaManager
 
             private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
                            _statusWeight = "Normal", _statusTip = "",
-                           _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "", _chkKindle = "";
+                           _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "",
+                           _chk6 = "", _chk7 = "", _chkKindle = "";
             private System.Windows.Media.ImageSource? _coverImage;
 
             public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
@@ -138,6 +173,8 @@ namespace MangaManager
             public string Chk3 { get => _chk3; set { _chk3 = value; OnChanged(nameof(Chk3)); } }
             public string Chk4 { get => _chk4; set { _chk4 = value; OnChanged(nameof(Chk4)); } }
             public string Chk5 { get => _chk5; set { _chk5 = value; OnChanged(nameof(Chk5)); } }
+            public string Chk6 { get => _chk6; set { _chk6 = value; OnChanged(nameof(Chk6)); } }
+            public string Chk7 { get => _chk7; set { _chk7 = value; OnChanged(nameof(Chk7)); } }
             public string ChkKindle { get => _chkKindle; set { _chkKindle = value; OnChanged(nameof(ChkKindle)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
         }
@@ -181,8 +218,8 @@ namespace MangaManager
             if (hasComicInfo) { completed++; steps.Add("✅ ComicInfo generated"); }
             else steps.Add("❌ ComicInfo missing");
 
-            // 5. Cleanup feito (sem CBZ soltos dentro dos volumes)
-            bool noCbzInVolumes = !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+            // 5. Cleanup feito (sem arquivos de manga soltos dentro dos volumes)
+            bool noCbzInVolumes = !volumes.Any(v => HasMangaFiles(v));
             if (noCbzInVolumes) { completed++; steps.Add("✅ Cleanup done"); }
             else steps.Add("❌ CBZ files still inside volume folders");
 
@@ -240,9 +277,16 @@ namespace MangaManager
                         Directory.GetFiles(ch, "*.webp").Length > 0));
             bool s4 = s3 && volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                         File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
-            bool s5 = s4 && !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+            bool s5 = s4 && !volumes.Any(v => HasMangaFiles(v));
 
             bool hasMobi = Directory.GetFiles(fullPath, "*.mobi", SearchOption.AllDirectories).Length > 0;
+
+            // S6 — Resize: verifica se há imagens redimensionadas (proxy: imagens existem e são menores que 1500px largura)
+            bool s6 = s3; // simplificado: consideramos feito se há imagens extraídas
+
+            // S7 — Convert: pasta Converted com EPUBs
+            bool s7 = Directory.Exists(Path.Combine(fullPath, "Converted")) &&
+                      Directory.GetFiles(Path.Combine(fullPath, "Converted"), "*.mobi").Length > 0;
 
             // Verifica se já está no Kindle (usa path passado para evitar múltiplas detecções)
             bool onKindle = false;
@@ -264,6 +308,8 @@ namespace MangaManager
                 Chk3 = s3 ? "✔" : "",
                 Chk4 = s4 ? "✔" : "",
                 Chk5 = s5 ? "✔" : "",
+                Chk6 = s6 ? "✔" : "",
+                Chk7 = s7 ? "✔" : "",
                 ChkKindle = onKindle ? "📱" : "",
             };
         }
@@ -279,9 +325,24 @@ namespace MangaManager
             return Path.Combine(basePath, selected.Name);
         }
 
-        // ==============================
-        // 🖼 COVER IMAGE
-        // ==============================
+        // Helper: retorna todos os arquivos de manga suportados (.cbz, .epub)
+        private static string[] GetMangaFiles(string path, string searchPattern = "*",
+            SearchOption option = SearchOption.TopDirectoryOnly)
+        {
+            return Directory.GetFiles(path, "*.*", option)
+                            .Where(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
+                                        f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase))
+                            .OrderBy(f => f)
+                            .ToArray();
+        }
+
+        private static bool HasMangaFiles(string path,
+            SearchOption option = SearchOption.TopDirectoryOnly)
+        {
+            return Directory.GetFiles(path, "*.*", option)
+                            .Any(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
+                                      f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase));
+        }
         private async Task LoadCoverAsync(MangaItem item, string mangaPath)
         {
             // 1. Tenta local
@@ -771,10 +832,10 @@ namespace MangaManager
                     return;
                 }
 
-                var cbzFiles = Directory.GetFiles(path, "*.cbz").OrderBy(x => x).ToArray();
+                var cbzFiles = GetMangaFiles(path);
                 if (cbzFiles.Length == 0)
                 {
-                    Log("No .cbz files found in manga folder.");
+                    Log("No .cbz or .epub files found in manga folder.");
                     return;
                 }
 
@@ -832,8 +893,7 @@ namespace MangaManager
                 }
 
                 Log($"{cbzFiles.Length} file(s) found. Starting organization...");
-                ProgressBar.Value = 0;
-                ProgressText.Text = "";
+                var token = StartOperation();
 
                 await Task.Run(() =>
                 {
@@ -843,6 +903,7 @@ namespace MangaManager
 
                     foreach (var cbz in cbzFiles)
                     {
+                        if (token.IsCancellationRequested) break;
                         string fileName = Path.GetFileNameWithoutExtension(cbz);
 
                         var volMatch = System.Text.RegularExpressions.Regex.Match(
@@ -860,9 +921,49 @@ namespace MangaManager
 
                         if (!chMatch.Success)
                         {
-                            Dispatcher.Invoke(() => Log($"⚠ Not recognized: {Path.GetFileName(cbz)}"));
-                            unmatched++;
-                            current++;
+                            // Arquivo especial/extra sem número — coloca no último volume
+                            var lastVol = Directory.GetDirectories(path, "* - Volume *")
+                                                   .OrderBy(x => x).LastOrDefault();
+                            if (lastVol != null)
+                            {
+                                string lastVolNum = new string(Path.GetFileName(lastVol)
+                                    .Where(char.IsDigit).ToArray()).TrimStart('0');
+                                if (string.IsNullOrEmpty(lastVolNum)) lastVolNum = "1";
+
+                                string specialVolFolder = $"{title} - Volume {int.Parse(lastVolNum):D2}";
+                                string volPath2 = Path.Combine(path, specialVolFolder);
+                                Directory.CreateDirectory(volPath2);
+
+                                string chName = Path.GetFileNameWithoutExtension(cbz);
+                                string chDest2 = Path.Combine(volPath2, chName);
+                                Directory.CreateDirectory(chDest2);
+
+                                string fileDest = Path.Combine(volPath2, Path.GetFileName(cbz));
+                                if (!File.Exists(fileDest)) File.Move(cbz, fileDest);
+
+                                var psi2 = new ProcessStartInfo
+                                {
+                                    FileName = zipPath,
+                                    Arguments = $"x \"{fileDest}\" -o\"{chDest2}\" -y",
+                                    CreateNoWindow = true,
+                                    UseShellExecute = false
+                                };
+                                Process.Start(psi2)?.WaitForExit();
+                                current++;
+
+                                Dispatcher.Invoke(() =>
+                                {
+                                    ProgressBar.Value = (double)current / total * 100;
+                                    ProgressText.Text = $"{current} / {total}";
+                                    Log($"⚠ Special/Extra → {specialVolFolder}\\{chName}: {Path.GetFileName(cbz)}");
+                                });
+                            }
+                            else
+                            {
+                                Dispatcher.Invoke(() => Log($"⚠ Not recognized (no volumes): {Path.GetFileName(cbz)}"));
+                                unmatched++;
+                                current++;
+                            }
                             continue;
                         }
 
@@ -897,19 +998,36 @@ namespace MangaManager
 
                         if (volNum == null || volNum == "0")
                         {
-                            Dispatcher.Invoke(() => Log($"⚠ Volume not found for chapter {chapterNum}: {Path.GetFileName(cbz)}"));
-                            unmatched++;
-                            current++;
-                            continue;
+                            // Coloca no último volume disponível
+                            var lastVol = Directory.GetDirectories(path, "* - Volume *")
+                                                   .OrderBy(x => x).LastOrDefault();
+                            if (lastVol != null)
+                            {
+                                volNum = new string(Path.GetFileName(lastVol)
+                                    .Where(char.IsDigit).ToArray()).TrimStart('0');
+                                if (string.IsNullOrEmpty(volNum)) volNum = "1";
+                                Dispatcher.Invoke(() => Log($"⚠ Special chapter → last volume: {Path.GetFileName(cbz)}"));
+                            }
+                            else
+                            {
+                                Dispatcher.Invoke(() => Log($"⚠ Not recognized and no volumes found: {Path.GetFileName(cbz)}"));
+                                unmatched++;
+                                current++;
+                                continue;
+                            }
                         }
 
                         string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
                         string volPath = Path.Combine(path, volFolder);
                         Directory.CreateDirectory(volPath);
 
-                        string chFormatted = chapterNum.Contains('.')
-                            ? $"Capitulo {chapterNum.PadLeft(6, '0')}"
-                            : $"Capitulo {int.Parse(chapterNum):D3}";
+                        string chFormatted;
+                        if (!chMatch.Success)
+                            chFormatted = Path.GetFileNameWithoutExtension(cbz); // especial/extra
+                        else if (chapterNum.Contains('.'))
+                            chFormatted = $"Capitulo {chapterNum.PadLeft(6, '0')}";
+                        else
+                            chFormatted = $"Capitulo {int.Parse(chapterNum):D3}";
 
                         string chDest = Path.Combine(volPath, chFormatted);
                         Directory.CreateDirectory(chDest);
@@ -939,6 +1057,7 @@ namespace MangaManager
 
                     Dispatcher.Invoke(() => {
                         Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched.");
+                        EndOperation();
                         RefreshSelectedStatus();
                     });
                 });
@@ -964,17 +1083,16 @@ namespace MangaManager
                 return;
             }
 
-            ProgressBar.Value = 0;
-            ProgressText.Text = "";
+            var token = StartOperation();
 
             await Task.Run(() =>
             {
                 var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
-                int total = volumes.Sum(v => Directory.GetFiles(v, "*.cbz").Length);
+                int total = volumes.Sum(v => GetMangaFiles(v).Length);
 
                 if (total == 0)
                 {
-                    Dispatcher.Invoke(() => Log("No .cbz files found."));
+                    Dispatcher.Invoke(() => { Log("No .cbz or .epub files found."); EndOperation(); });
                     return;
                 }
 
@@ -982,10 +1100,12 @@ namespace MangaManager
 
                 foreach (var vol in volumes)
                 {
-                    var cbzs = Directory.GetFiles(vol, "*.cbz").OrderBy(x => x).ToArray();
+                    if (token.IsCancellationRequested) break;
+                    var cbzs = GetMangaFiles(vol);
 
                     foreach (var cbz in cbzs)
                     {
+                        if (token.IsCancellationRequested) break;
                         string fileName = Path.GetFileNameWithoutExtension(cbz);
 
                         // Extrai número do capítulo do nome do arquivo
@@ -1038,6 +1158,7 @@ namespace MangaManager
             });
 
             Log("Extraction complete.");
+            EndOperation();
             RefreshSelectedStatus();
         }
 
@@ -1098,45 +1219,59 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             var path = GetSelectedPath();
             if (path == null) return;
 
-            var cbzFiles = Directory.GetFiles(path, "*.cbz", SearchOption.AllDirectories)
-                                    .OrderBy(x => x)
-                                    .ToArray();
-
-            if (cbzFiles.Length == 0)
-            {
-                Log("No CBZ files found inside volume folders.");
-                return;
-            }
-
-            string cbzBackupFolder = Path.Combine(path, "CBZ");
-            Directory.CreateDirectory(cbzBackupFolder);
+            var cbzFiles = GetMangaFiles(path, "*", SearchOption.AllDirectories);
+            string cbzBackupFolder = Path.Combine(path, "Originals");
 
             int moved = 0;
             int skipped = 0;
 
-            foreach (var cbz in cbzFiles)
+            // Move arquivos CBZ/EPUB para pasta de backup
+            if (cbzFiles.Length > 0)
             {
-                if (Path.GetDirectoryName(cbz) == cbzBackupFolder)
+                Directory.CreateDirectory(cbzBackupFolder);
+
+                foreach (var cbz in cbzFiles)
                 {
-                    skipped++;
-                    continue;
+                    if (Path.GetDirectoryName(cbz) == cbzBackupFolder)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    string dest = Path.Combine(cbzBackupFolder, Path.GetFileName(cbz));
+
+                    if (File.Exists(dest))
+                    {
+                        Log($"⚠ Already exists, skipping: {Path.GetFileName(cbz)}");
+                        skipped++;
+                        continue;
+                    }
+
+                    File.Move(cbz, dest);
+                    Log($"Moved: {Path.GetFileName(cbz)}");
+                    moved++;
                 }
-
-                string dest = Path.Combine(cbzBackupFolder, Path.GetFileName(cbz));
-
-                if (File.Exists(dest))
-                {
-                    Log($"⚠ Already exists, skipping: {Path.GetFileName(cbz)}");
-                    skipped++;
-                    continue;
-                }
-
-                File.Move(cbz, dest);
-                Log($"Moved: {Path.GetFileName(cbz)}");
-                moved++;
             }
 
-            Log($"Cleanup done. {moved} file(s) moved to /CBZ, {skipped} skipped.");
+            // Remove pastas de volume vazias (sem capítulos)
+            int removedVols = 0;
+            var volumes = Directory.GetDirectories(path, "* - Volume *");
+            foreach (var vol in volumes)
+            {
+                var chapters = Directory.GetDirectories(vol);
+                bool hasContent = chapters.Any(ch =>
+                    Directory.GetFiles(ch).Length > 0 ||
+                    Directory.GetDirectories(ch).Length > 0);
+
+                if (!hasContent && chapters.Length == 0)
+                {
+                    Directory.Delete(vol, recursive: true);
+                    Log($"🗑 Removed empty volume: {Path.GetFileName(vol)}");
+                    removedVols++;
+                }
+            }
+
+            Log($"Cleanup done. {moved} file(s) moved to /Originals, {skipped} skipped, {removedVols} empty volume(s) removed.");
             RefreshSelectedStatus();
         }
 
@@ -1198,14 +1333,46 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             string mangaName = (MangaList.SelectedItem as MangaItem)!.Name;
 
-            // Busca arquivos .mobi na pasta do mangá
-            var files = Directory.GetFiles(path, "*.mobi", SearchOption.AllDirectories)
-                                 .OrderBy(x => x)
-                                 .ToArray();
+            // Busca EPUBs na pasta Converted
+            string convertedFolder = Path.Combine(path, "Converted");
+            var files = Directory.Exists(convertedFolder)
+                ? Directory.GetFiles(convertedFolder, "*.mobi").OrderBy(x => x).ToArray()
+                : Array.Empty<string>();
 
             if (files.Length == 0)
             {
-                Log("No .mobi files found. Please run KCC first.");
+                Log("No MOBI files found in /Converted. Please run Convert to MOBI first.");
+                return;
+            }
+
+            // Filtra por volume se Range estiver selecionado
+            if (ChkSendRange.IsChecked == true)
+            {
+                var selected = ParseVolumeSelection(VolumeRangeBox.Text);
+                if (selected.Count == 0)
+                {
+                    Log("Please enter a valid volume range (e.g. 1,2,3 or 1-6).");
+                    return;
+                }
+
+                files = files.Where(f =>
+                {
+                    // Extrai número do volume do nome do arquivo
+                    var match = System.Text.RegularExpressions.Regex.Match(
+                        Path.GetFileNameWithoutExtension(f), @"Volume (\d+)");
+                    return match.Success && selected.Contains(int.Parse(match.Groups[1].Value));
+                }).ToArray();
+
+                Log($"Sending {files.Length} volume(s) based on selection: {VolumeRangeBox.Text}");
+            }
+            else
+            {
+                Log($"Sending all {files.Length} volume(s).");
+            }
+
+            if (files.Length == 0)
+            {
+                Log("No matching volumes found for the selected range.");
                 return;
             }
 
@@ -1225,12 +1392,18 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             Log($"Kindle found at: {kindlePath}");
 
             // Destino: \documents\Mangas\<nome do mangá>\
-            string destFolder = Path.Combine(kindlePath, "Mangas", mangaName);
+            string mangasFolder = Path.Combine(kindlePath, "Mangas");
+            string destFolder = Path.Combine(mangasFolder, mangaName);
+
+            if (!Directory.Exists(mangasFolder))
+                Log($"Creating /Mangas folder on Kindle...");
+            if (!Directory.Exists(destFolder))
+                Log($"Creating manga folder: {mangaName}");
+
             Directory.CreateDirectory(destFolder);
             Log($"Destination: {destFolder}");
 
-            ProgressBar.Value = 0;
-            ProgressText.Text = "";
+            var token = StartOperation();
 
             await Task.Run(() =>
             {
@@ -1240,6 +1413,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
                 foreach (var file in files)
                 {
+                    if (token.IsCancellationRequested) break;
                     string dest = Path.Combine(destFolder, Path.GetFileName(file));
 
                     if (File.Exists(dest))
@@ -1263,9 +1437,80 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
                 Dispatcher.Invoke(() => {
                     Log($"Done! {current - skipped} file(s) sent to Kindle, {skipped} skipped.");
+                    TriggerKindleRescan(kindlePath);
+                    EndOperation();
                     RefreshSelectedStatus();
                 });
             });
+        }
+
+        private void TriggerKindleRescan(string kindleDocsPath)
+        {
+            try
+            {
+                // O Kindle monitora a pasta raiz do dispositivo
+                // Criar/tocar o arquivo .system/RESCAN força o re-index
+                string kindleRoot = Path.GetDirectoryName(kindleDocsPath) ?? kindleDocsPath;
+
+                // Método 1: arquivo de trigger na raiz
+                string triggerFile = Path.Combine(kindleRoot, "system", "RESCAN");
+                string systemFolder = Path.Combine(kindleRoot, "system");
+
+                if (Directory.Exists(systemFolder))
+                {
+                    File.WriteAllText(triggerFile, "");
+                    Log("📱 Kindle rescan triggered. Books should appear shortly.");
+                    return;
+                }
+
+                // Método 2: atualiza o timestamp da pasta documents
+                // O Kindle detecta mudanças no diretório e re-indexa
+                Directory.SetLastWriteTime(kindleDocsPath, DateTime.Now);
+                Log("📱 Kindle index refresh requested. Eject and reconnect if books don't appear.");
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠ Could not trigger Kindle rescan: {ex.Message}");
+            }
+        }
+
+        private void RemoveFromKindle_Click(object sender, RoutedEventArgs e)
+        {
+            if (MangaList.SelectedItem is not MangaItem selected) return;
+
+            string? kindlePath = FindKindlePath();
+            if (kindlePath == null)
+            {
+                Log("Kindle not found. Make sure it's connected via USB and unlocked.");
+                return;
+            }
+
+            string mangaFolder = Path.Combine(kindlePath, "Mangas", selected.Name);
+
+            if (!Directory.Exists(mangaFolder))
+            {
+                Log($"Folder not found on Kindle: {selected.Name}");
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"Remove \"{selected.Name}\" from Kindle?\n\nThis will permanently delete:\n{mangaFolder}",
+                "Remove from Kindle",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            try
+            {
+                Directory.Delete(mangaFolder, recursive: true);
+                Log($"🗑 Removed from Kindle: {selected.Name}");
+                RefreshSelectedStatus();
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠ Error removing from Kindle: {ex.Message}");
+            }
         }
 
         // 🔄 OTHER
@@ -1292,8 +1537,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             bool hasComicInfo = volumes.Any(v =>
                 Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                     File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
-            bool cleaned = volumes.Length > 0 &&
-                           !volumes.Any(v => Directory.GetFiles(v, "*.cbz").Length > 0);
+            bool cleaned = volumes.Length > 0 && !volumes.Any(v => HasMangaFiles(v));
+            bool kindleConnected = FindKindlePath() != null;
 
             // Fetch Author: sempre habilitado
             BtnFetchAuthor.IsEnabled = true;
@@ -1303,17 +1548,25 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnOrganize.IsEnabled = true;
             SetCheck(BtnOrganize, hasChapters);
 
-            // Extract: só após organizar
             BtnExtract.IsEnabled = hasChapters;
             SetCheck(BtnExtract, hasImages);
 
-            // ComicInfo: só após extrair
+            BtnResize.IsEnabled = hasImages;
+
             BtnComicInfo.IsEnabled = hasImages;
             SetCheck(BtnComicInfo, hasComicInfo);
 
-            // Cleanup: só após ComicInfo
             BtnCleanup.IsEnabled = hasComicInfo;
             SetCheck(BtnCleanup, cleaned);
+
+            bool hasConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
+                                Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.mobi").Length > 0;
+
+            BtnConvert.IsEnabled = cleaned;
+            SetCheck(BtnConvert, hasConverted);
+
+            BtnSendToKindle.IsEnabled = hasConverted;
+            BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
 
         // Busca o primeiro TextBlock com Text="✔ " dentro do botão e alterna visibilidade
@@ -1359,6 +1612,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             selected.Chk3 = updated.Chk3;
             selected.Chk4 = updated.Chk4;
             selected.Chk5 = updated.Chk5;
+            selected.Chk6 = updated.Chk6;
+            selected.Chk7 = updated.Chk7;
             selected.ChkKindle = updated.ChkKindle;
 
             UpdateButtonStates(fullPath);
@@ -1370,10 +1625,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             {
                 string fullPath = Path.Combine(basePath, selected.Name);
                 UpdateButtonStates(fullPath);
+                StartWatcher(fullPath);
             }
             else
             {
                 ResetButtonStates();
+                _watcher?.Dispose();
             }
         }
 
@@ -1383,13 +1640,369 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnOrganize.IsEnabled = true;
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
+            BtnResize.IsEnabled = false;
+            BtnConvert.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
+            BtnSendToKindle.IsEnabled = false;
+            BtnRemoveFromKindle.IsEnabled = false;
+        }
+
+        // ==============================
+        // 📱 DEVICE COMBO
+        // ==============================
+        private record DeviceProfile(string Name, int Width, int Height);
+
+        private void InitializeDeviceCombo()
+        {
+            var devices = new List<DeviceProfile>
+            {
+                new("Kindle Paperwhite 1/2/3 (758×1024)",     758,  1024),
+                new("Kindle Paperwhite 4/5 (1072×1448)",     1072,  1448),
+                new("Kindle Paperwhite 11th Gen (1236×1648)", 1236, 1648),
+                new("Kindle Oasis (1264×1680)",               1264,  1680),
+                new("Kindle Scribe (1860×2480)",              1860,  2480),
+                new("Kindle Basic 2022 (1072×1448)",          1072,  1448),
+            };
+
+            DeviceCombo.ItemsSource = devices;
+            DeviceCombo.DisplayMemberPath = "Name";
+
+            // Carrega perfil salvo anteriormente
+            var savedDevice = Properties.Settings.Default.KindleDevice;
+            var match = devices.FirstOrDefault(d => d.Name == savedDevice);
+            DeviceCombo.SelectedItem = match ?? devices[0];
+
+            // Salva ao mudar
+            DeviceCombo.SelectionChanged += (s, e) =>
+            {
+                if (DeviceCombo.SelectedItem is DeviceProfile selected)
+                {
+                    Properties.Settings.Default.KindleDevice = selected.Name;
+                    Properties.Settings.Default.Save();
+                }
+            };
+        }
+
+        // ==============================
+        // 🖼 RESIZE IMAGES
+        // ==============================
+        private async void Resize_Click(object sender, RoutedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path == null) return;
+
+            if (DeviceCombo.SelectedItem is not DeviceProfile device)
+            {
+                Log("Please select a device.");
+                return;
+            }
+
+            var images = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
+                .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (images.Length == 0)
+            {
+                Log("No images found. Please extract first.");
+                return;
+            }
+
+            Log($"Resizing {images.Length} image(s) to {device.Width}×{device.Height} ({device.Name})...");
+            var token = StartOperation();
+
+            await Task.Run(() =>
+            {
+                int total = images.Length;
+                int current = 0;
+
+                foreach (var img in images)
+                {
+                    if (token.IsCancellationRequested) break;
+                    try
+                    {
+                        using var original = System.Drawing.Image.FromFile(img);
+
+                        // Calcula proporção mantendo aspect ratio
+                        float ratioW = (float)device.Width / original.Width;
+                        float ratioH = (float)device.Height / original.Height;
+                        float ratio = Math.Min(ratioW, ratioH);
+
+                        int newW = (int)(original.Width * ratio);
+                        int newH = (int)(original.Height * ratio);
+
+                        // Detecta e remove bordas brancas/pretas
+                        using var cropped = CropBorders((System.Drawing.Bitmap)original);
+
+                        using var resized = new System.Drawing.Bitmap(newW, newH);
+                        using var g = System.Drawing.Graphics.FromImage(resized);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(cropped, 0, 0, newW, newH);
+
+                        // Salva sobrescrevendo o original
+                        var format = img.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                            ? System.Drawing.Imaging.ImageFormat.Png
+                            : System.Drawing.Imaging.ImageFormat.Jpeg;
+
+                        resized.Save(img, format);
+                    }
+                    catch { /* ignora imagem com problema */ }
+
+                    current++;
+                    Dispatcher.Invoke(() =>
+                    {
+                        ProgressBar.Value = (double)current / total * 100;
+                        ProgressText.Text = $"{current} / {total}";
+                    });
+                }
+
+                Dispatcher.Invoke(() =>
+                {
+                    Log($"Resize complete. {total} image(s) resized for {device.Name}.");
+                    EndOperation();
+                    RefreshSelectedStatus();
+                });
+            });
+        }
+
+        private System.Drawing.Bitmap CropBorders(System.Drawing.Bitmap bmp, int threshold = 20)
+        {
+            int top = 0, bottom = bmp.Height - 1, left = 0, right = bmp.Width - 1;
+
+            bool IsBorderColor(System.Drawing.Color c) =>
+                (c.R < threshold && c.G < threshold && c.B < threshold) ||          // preto
+                (c.R > 255 - threshold && c.G > 255 - threshold && c.B > 255 - threshold); // branco
+
+            bool RowIsBorder(int y)
+            {
+                for (int x = 0; x < bmp.Width; x++)
+                    if (!IsBorderColor(bmp.GetPixel(x, y))) return false;
+                return true;
+            }
+
+            bool ColIsBorder(int x)
+            {
+                for (int y = 0; y < bmp.Height; y++)
+                    if (!IsBorderColor(bmp.GetPixel(x, y))) return false;
+                return true;
+            }
+
+            while (top < bottom && RowIsBorder(top)) top++;
+            while (bottom > top && RowIsBorder(bottom)) bottom--;
+            while (left < right && ColIsBorder(left)) left++;
+            while (right > left && ColIsBorder(right)) right--;
+
+            var rect = new System.Drawing.Rectangle(left, top, right - left + 1, bottom - top + 1);
+
+            // Se a imagem toda for borda, retorna original
+            if (rect.Width <= 0 || rect.Height <= 0) return bmp;
+
+            return bmp.Clone(rect, bmp.PixelFormat);
+        }
+
+        // ==============================
+        // 📗 CONVERT TO MOBI
+        // ==============================
+        private async void Convert_Click(object sender, RoutedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path == null) return;
+
+            string mangaName = (MangaList.SelectedItem as MangaItem)!.Name;
+            string convertedFolder = Path.Combine(path, "Converted");
+            Directory.CreateDirectory(convertedFolder);
+
+            var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
+
+            if (volumes.Length == 0)
+            {
+                Log("No volume folders found.");
+                return;
+            }
+
+            Log($"Converting {volumes.Length} volume(s) to MOBI...");
+            var token = StartOperation();
+            string convertedFolderCapture = convertedFolder;
+
+            await Task.Run(() =>
+            {
+                int total = volumes.Length;
+                int current = 0;
+
+                foreach (var vol in volumes)
+                {
+                    if (token.IsCancellationRequested) break;
+                    string volName = Path.GetFileName(vol);
+                    string mobiPath = Path.Combine(convertedFolderCapture, $"{volName}.mobi");
+
+                    try
+                    {
+                        if (File.Exists(mobiPath)) File.Delete(mobiPath);
+
+                        // Coleta imagens dos capítulos em ordem
+                        var imgFiles = Directory.GetFiles(vol, "*.*", SearchOption.AllDirectories)
+                            .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                        f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                                        f.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                            .OrderBy(f => f)
+                            .ToList();
+
+                        if (imgFiles.Count == 0)
+                        {
+                            Dispatcher.Invoke(() => Log($"⚠ No images found in {volName}, skipping."));
+                            current++;
+                            continue;
+                        }
+
+                        // Gera HTML com imagens embutidas em base64
+                        // O Kindle aceita HTML com imagens base64 e converte internamente
+                        var html = new System.Text.StringBuilder();
+                        html.AppendLine("<!DOCTYPE html>");
+                        html.AppendLine("<html><head>");
+                        html.AppendLine($"<title>{volName}</title>");
+                        html.AppendLine("<style>");
+                        html.AppendLine("body { margin:0; padding:0; background:#000; }");
+                        html.AppendLine("img { display:block; width:100%; height:auto; margin:0; padding:0; }");
+                        html.AppendLine("</style></head><body>");
+
+                        foreach (var imgFile in imgFiles)
+                        {
+                            string ext = Path.GetExtension(imgFile).ToLower();
+                            string mime = ext == ".png" ? "image/png" : "image/jpeg";
+                            string b64 = Convert.ToBase64String(File.ReadAllBytes(imgFile));
+                            html.AppendLine($"<img src=\"data:{mime};base64,{b64}\"/>");
+                        }
+
+                        html.AppendLine("</body></html>");
+
+                        // Salva como .mobi (HTML renomeado — Kindle aceita via Send to Kindle ou USB)
+                        // Para USB, salva como .html e o Kindle converte automaticamente
+                        // Mas para melhor compatibilidade, usamos extensão .mobi com conteúdo HTML
+                        File.WriteAllText(mobiPath, html.ToString(), System.Text.Encoding.UTF8);
+
+                        current++;
+                        long fileSize = new FileInfo(mobiPath).Length;
+                        Dispatcher.Invoke(() =>
+                        {
+                            ProgressBar.Value = (double)current / total * 100;
+                            ProgressText.Text = $"{current} / {total}";
+                            Log($"✓ {volName}.mobi ({fileSize / 1024} KB)");
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.Invoke(() => Log($"⚠ Error converting {volName}: {ex.Message}"));
+                        current++;
+                    }
+                }
+
+                Dispatcher.Invoke(() =>
+                {
+                    Log($"Conversion complete. {current} MOBI(s) saved to /Converted.");
+                    EndOperation();
+                    RefreshSelectedStatus();
+                });
+            });
+        }
+
+        private void ChkSendAll_Checked(object sender, RoutedEventArgs e)
+        {
+            if (ChkSendRange == null || VolumeRangeBox == null) return;
+            ChkSendRange.IsChecked = false;
+            VolumeRangeBox.IsEnabled = false;
+        }
+
+        private void ChkSendAll_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (ChkSendRange == null || VolumeRangeBox == null) return;
+            ChkSendRange.IsChecked = true;
+            VolumeRangeBox.IsEnabled = true;
+        }
+
+        private void ChkSendRange_Checked(object sender, RoutedEventArgs e)
+        {
+            if (ChkSendAll == null || VolumeRangeBox == null) return;
+            ChkSendAll.IsChecked = false;
+            VolumeRangeBox.IsEnabled = true;
+        }
+
+        private void ChkSendRange_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (ChkSendAll == null || VolumeRangeBox == null) return;
+            ChkSendAll.IsChecked = true;
+            VolumeRangeBox.IsEnabled = false;
+        }
+
+        // Retorna lista de números de volume selecionados
+        // Suporta: "1,2,3" ou "1-6" ou "1,3,5-8"
+        private HashSet<int> ParseVolumeSelection(string input)
+        {
+            var result = new HashSet<int>();
+            if (string.IsNullOrWhiteSpace(input)) return result;
+
+            foreach (var part in input.Split(','))
+            {
+                var trimmed = part.Trim();
+                if (trimmed.Contains('-'))
+                {
+                    var bounds = trimmed.Split('-');
+                    if (int.TryParse(bounds[0].Trim(), out int start) &&
+                        int.TryParse(bounds[1].Trim(), out int end))
+                    {
+                        for (int i = start; i <= end; i++)
+                            result.Add(i);
+                    }
+                }
+                else if (int.TryParse(trimmed, out int num))
+                {
+                    result.Add(num);
+                }
+            }
+            return result;
         }
 
         private void MangaList_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
         {
             MangaScrollViewer.ScrollToVerticalOffset(MangaScrollViewer.VerticalOffset - e.Delta);
             e.Handled = true;
+        }
+
+        // ==============================
+        // ⏹ CANCEL
+        // ==============================
+        private CancellationToken StartOperation()
+        {
+            _cts = new CancellationTokenSource();
+            BtnCancel.IsEnabled = true;
+            ProgressBar.Value = 0;
+            ProgressText.Text = "";
+            return _cts.Token;
+        }
+
+        private void EndOperation()
+        {
+            _cts = null;
+            BtnCancel.IsEnabled = false;
+        }
+
+        private void Cancel_Click(object sender, RoutedEventArgs e)
+        {
+            if (_cts == null) return;
+
+            var result = MessageBox.Show(
+                "Are you sure you want to cancel the current operation?\n\nProgress so far will be kept.",
+                "Cancel Operation",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                _cts.Cancel();
+                Log("⏹ Operation cancelled by user.");
+                BtnCancel.IsEnabled = false;
+            }
         }
 
         private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMangas();

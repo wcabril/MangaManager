@@ -8,6 +8,7 @@
 		<UseWPF>true</UseWPF>
 		<UseWindowsForms>true</UseWindowsForms>
 		<ApplicationIcon>app.ico</ApplicationIcon>
+		<UseSkiaSharp>false</UseSkiaSharp>
 	</PropertyGroup>
 
 	<ItemGroup>
