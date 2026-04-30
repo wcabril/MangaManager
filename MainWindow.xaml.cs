@@ -53,7 +53,7 @@ namespace MangaManager
                 if (eventType == DBT_DEVICEARRIVAL || eventType == DBT_DEVICEREMOVECOMPLETE)
                 {
                     // Aguarda o Windows montar o drive antes de verificar
-                    Task.Delay(1500).ContinueWith(_ =>
+                    Task.Delay(3000).ContinueWith(_ =>
                         Dispatcher.Invoke(() => RefreshKindleStatus()));
                 }
             }
@@ -66,11 +66,15 @@ namespace MangaManager
             bool kindleConnected = kindlePath != null;
 
             if (kindleConnected)
-                Log("📱 Kindle detected! Updating status...");
+                Log($"📱 Kindle detected at: {kindlePath}");
             else
-                Log("📱 Kindle disconnected.");
+            {
+                // Log de debug: lista todos os drives disponíveis
+                var drives = DriveInfo.GetDrives().Where(d => d.IsReady)
+                    .Select(d => $"{d.Name} [{d.VolumeLabel}]");
+                Log($"📱 Kindle not found. Drives: {string.Join(", ", drives)}");
+            }
 
-            // Atualiza o ícone 📱 em todos os cards
             foreach (var item in MangaList.Items.OfType<MangaItem>())
             {
                 if (kindlePath != null)
@@ -81,9 +85,7 @@ namespace MangaManager
                                      ? "📱" : "";
                 }
                 else
-                {
                     item.ChkKindle = "";
-                }
             }
         }
 
@@ -1146,38 +1148,42 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         {
             foreach (var drive in DriveInfo.GetDrives())
             {
-                if (drive.DriveType != DriveType.Removable && drive.DriveType != DriveType.Fixed)
-                    continue;
-
                 try
                 {
                     if (!drive.IsReady) continue;
 
-                    // Kindle Fire / Paperwhite via USB
-                    string[] kindlePaths = {
-                        Path.Combine(drive.RootDirectory.FullName, "documents"),
-                        Path.Combine(drive.RootDirectory.FullName, "Books"),
-                        Path.Combine(drive.RootDirectory.FullName, "Kindle", "documents"),
+                    string root = drive.RootDirectory.FullName;
+                    string label = drive.VolumeLabel?.ToLower() ?? "";
+
+                    // Possíveis caminhos do Kindle
+                    string[] candidates = {
+                        Path.Combine(root, "documents"),
+                        Path.Combine(root, "Books"),
+                        Path.Combine(root, "Kindle", "documents"),
+                        Path.Combine(root, "Internal Storage", "documents"),
+                        Path.Combine(root, "Internal Storage", "Books"),
                     };
 
-                    // Verifica marcadores típicos do Kindle
-                    string[] kindleMarkers = {
-                        Path.Combine(drive.RootDirectory.FullName, "system"),
-                        Path.Combine(drive.RootDirectory.FullName, "documents"),
+                    // Marcadores que identificam um Kindle
+                    string[] markers = {
+                        Path.Combine(root, "system"),
+                        Path.Combine(root, "documents"),
+                        Path.Combine(root, "active_process"),
+                        Path.Combine(root, "kindle.info"),
                     };
 
-                    bool looksLikeKindle = kindleMarkers.Any(Directory.Exists) &&
-                                           drive.VolumeLabel.ToLower().Contains("kindle");
-
-                    // Se não tem label "kindle", verifica pela estrutura de pastas
-                    if (!looksLikeKindle)
-                        looksLikeKindle = kindlePaths.Any(Directory.Exists);
+                    bool looksLikeKindle = label.Contains("kindle") ||
+                                           markers.Any(File.Exists) ||
+                                           markers.Any(Directory.Exists);
 
                     if (looksLikeKindle)
                     {
-                        var docsPath = kindlePaths.FirstOrDefault(Directory.Exists);
-                        if (docsPath != null)
-                            return docsPath;
+                        // Retorna o primeiro caminho de documentos que existe
+                        var docsPath = candidates.FirstOrDefault(Directory.Exists);
+                        if (docsPath != null) return docsPath;
+
+                        // Se não achou subpasta, retorna a raiz
+                        return root;
                     }
                 }
                 catch { }
