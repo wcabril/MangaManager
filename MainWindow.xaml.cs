@@ -18,6 +18,8 @@ namespace MangaManager
     {
         string basePath = string.Empty;
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
+        string kindlePreviewerPath = string.Empty;
+        string calibrePath = string.Empty;
         CancellationTokenSource? _cts;
         FileSystemWatcher? _watcher;
 
@@ -47,6 +49,9 @@ namespace MangaManager
                 BasePathBox.Text = basePath;
                 LoadMangas();
             }
+
+            // Detecta após UI estar pronta — Calibre tem prioridade sobre KP3
+            Loaded += (s, e) => { DetectCalibre(); DetectKindlePreviewer(); };
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -85,7 +90,9 @@ namespace MangaManager
                 {
                     string kindleDest = Path.Combine(kindlePath, "Mangas", item.Name);
                     item.ChkKindle = Directory.Exists(kindleDest) &&
-                                     Directory.GetFiles(kindleDest, "*.mobi").Length > 0
+                                     (Directory.GetFiles(kindleDest, "*.mobi").Length > 0 ||
+                                      Directory.GetFiles(kindleDest, "*.epub").Length > 0 ||
+                                      Directory.GetFiles(kindleDest, "*.azw3").Length > 0)
                                      ? "📱" : "";
                 }
                 else
@@ -96,6 +103,155 @@ namespace MangaManager
         // ==============================
         // 📂 SELECT FOLDER
         // ==============================
+        private void DetectKindlePreviewer()
+        {
+            // 1. Verifica se já foi salvo nas settings
+            var saved = Properties.Settings.Default.KindlePreviewerPath;
+            if (!string.IsNullOrEmpty(saved) && File.Exists(saved))
+            {
+                kindlePreviewerPath = saved;
+                Log($"✓ Kindle Previewer 3 ready: {kindlePreviewerPath}");
+                return;
+            }
+
+            // 2. Tenta detectar automaticamente nos caminhos padrão de instalação
+            var candidates = new[]
+            {
+                @"C:\Program Files\Amazon\Kindle Previewer 3\KindlePreviewer.exe",
+                @"C:\Program Files (x86)\Amazon\Kindle Previewer 3\KindlePreviewer.exe",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Amazon", "Kindle Previewer 3", "KindlePreviewer.exe"),
+            };
+
+            var found = candidates.FirstOrDefault(File.Exists);
+            if (found != null)
+            {
+                kindlePreviewerPath = found;
+                Properties.Settings.Default.KindlePreviewerPath = kindlePreviewerPath;
+                Properties.Settings.Default.Save();
+                Log($"✓ Kindle Previewer 3 found: {kindlePreviewerPath}");
+                return;
+            }
+
+            // 3. Não encontrou — pergunta ao usuário
+            Log("⚠ Kindle Previewer 3 not found.");
+
+            var result = MessageBox.Show(
+                "Kindle Previewer 3 was not found on your system.\n\n" +
+                "It is required to convert manga to AZW3 format (the modern Kindle format).\n" +
+                "This is the same conversion engine used by KCC internally — free from Amazon.\n\n" +
+                "• Yes — locate KindlePreviewer.exe manually\n" +
+                "• No  — continue in EPUB-only mode",
+                "Kindle Previewer 3 Not Found",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                var dialog = new WinForms.OpenFileDialog
+                {
+                    Title = "Locate KindlePreviewer.exe",
+                    Filter = "Kindle Previewer|KindlePreviewer.exe|All executables|*.exe",
+                    FileName = "KindlePreviewer.exe"
+                };
+
+                if (dialog.ShowDialog() == WinForms.DialogResult.OK && File.Exists(dialog.FileName))
+                {
+                    kindlePreviewerPath = dialog.FileName;
+                    Properties.Settings.Default.KindlePreviewerPath = kindlePreviewerPath;
+                    Properties.Settings.Default.Save();
+                    Log($"✓ Kindle Previewer 3 set: {kindlePreviewerPath}");
+                }
+                else
+                {
+                    Log("⚠ Kindle Previewer 3 not set. Running in EPUB-only mode.");
+                    OfferKindlePreviewerDownload();
+                }
+            }
+            else
+            {
+                Log("⚠ Running in EPUB-only mode. Install Kindle Previewer 3 to enable AZW3 conversion.");
+                OfferKindlePreviewerDownload();
+            }
+        }
+
+        private void OfferKindlePreviewerDownload()
+        {
+            var result = MessageBox.Show(
+                "Would you like to open the Kindle Previewer 3 download page?\n\n" +
+                "After installing, restart Manga Manager and it will be detected automatically.\n" +
+                "Kindle Previewer 3 converts EPUB → AZW3 (the modern Kindle format, same engine KCC uses).",
+                "Install Kindle Previewer 3?",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+
+            if (result == MessageBoxResult.Yes)
+                System.Diagnostics.Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://www.amazon.com/gp/feature.html?ie=UTF8&docId=1000765261",
+                    UseShellExecute = true
+                });
+        }
+
+        private void DetectCalibre()
+        {
+            string[] candidates = {
+                @"C:\Program Files\Calibre2\ebook-convert.exe",
+                @"C:\Program Files (x86)\Calibre2\ebook-convert.exe",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Calibre2", "ebook-convert.exe"),
+            };
+
+            var found = candidates.FirstOrDefault(File.Exists);
+            if (found != null)
+            {
+                calibrePath = found;
+                Log($"✓ Calibre ebook-convert found: {calibrePath}");
+            }
+        }
+
+        private bool ConvertEpubWithCalibre(string epubPath, string outputFolder, string kindleProfile, out string azw3Path)
+        {
+            string azw3Name = Path.GetFileNameWithoutExtension(epubPath) + ".azw3";
+            azw3Path = Path.Combine(outputFolder, azw3Name);
+
+            if (File.Exists(azw3Path)) File.Delete(azw3Path);
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = calibrePath,
+                Arguments = $"\"{epubPath}\" \"{azw3Path}\" --output-profile {kindleProfile}",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            Dispatcher.Invoke(() => Log($"[Calibre] Converting {Path.GetFileName(epubPath)}..."));
+
+            using var proc = Process.Start(psi)!;
+
+            proc.OutputDataReceived += (_, args) =>
+            {
+                if (!string.IsNullOrWhiteSpace(args.Data))
+                    Dispatcher.Invoke(() => Log($"  [calibre] {args.Data}"));
+            };
+            proc.ErrorDataReceived += (_, args) =>
+            {
+                if (!string.IsNullOrWhiteSpace(args.Data))
+                    Dispatcher.Invoke(() => Log($"  [calibre] {args.Data}"));
+            };
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            proc.WaitForExit(300_000); // timeout 5 min
+
+            bool ok = File.Exists(azw3Path);
+            Dispatcher.Invoke(() => Log(ok
+                ? $"[Calibre] ✓ AZW3 gerado: {azw3Name}"
+                : $"⚠ Calibre exit {proc.ExitCode} — arquivo não gerado"));
+            return ok;
+        }
+
         private void StartWatcher(string path)
         {
             _watcher?.Dispose();
@@ -279,14 +435,13 @@ namespace MangaManager
                         File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
             bool s5 = s4 && !volumes.Any(v => HasMangaFiles(v));
 
-            bool hasMobi = Directory.GetFiles(fullPath, "*.mobi", SearchOption.AllDirectories).Length > 0;
+            bool hasMobi = HasConvertedFiles(Path.Combine(fullPath, "Converted"));
 
             // S6 — Resize: verifica se há imagens redimensionadas (proxy: imagens existem e são menores que 1500px largura)
             bool s6 = s3; // simplificado: consideramos feito se há imagens extraídas
 
-            // S7 — Convert: pasta Converted com EPUBs
-            bool s7 = Directory.Exists(Path.Combine(fullPath, "Converted")) &&
-                      Directory.GetFiles(Path.Combine(fullPath, "Converted"), "*.mobi").Length > 0;
+            // S7 — Convert: pasta Converted com EPUB ou MOBI
+            bool s7 = HasConvertedFiles(Path.Combine(fullPath, "Converted"));
 
             // Verifica se já está no Kindle (usa path passado para evitar múltiplas detecções)
             bool onKindle = false;
@@ -294,7 +449,9 @@ namespace MangaManager
             {
                 string kindleDest = Path.Combine(kindleDocsPath, "Mangas", name);
                 onKindle = Directory.Exists(kindleDest) &&
-                           Directory.GetFiles(kindleDest, "*.mobi").Length > 0;
+                           (Directory.GetFiles(kindleDest, "*.mobi").Length > 0 ||
+                            Directory.GetFiles(kindleDest, "*.epub").Length > 0 ||
+                            Directory.GetFiles(kindleDest, "*.azw3").Length > 0);
             }
 
             return new MangaItem
@@ -343,6 +500,21 @@ namespace MangaManager
                             .Any(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
                                       f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase));
         }
+
+        private static bool HasConvertedFiles(string convertedFolder) =>
+            Directory.Exists(convertedFolder) && (
+                Directory.GetFiles(convertedFolder, "*.epub").Length > 0 ||
+                Directory.GetFiles(convertedFolder, "*.mobi").Length > 0 ||
+                Directory.GetFiles(convertedFolder, "*.azw3").Length > 0);
+
+        private static string[] GetConvertedFiles(string convertedFolder) =>
+            Directory.Exists(convertedFolder)
+                ? Directory.GetFiles(convertedFolder, "*.epub")
+                    .Concat(Directory.GetFiles(convertedFolder, "*.mobi"))
+                    .Concat(Directory.GetFiles(convertedFolder, "*.azw3"))
+                    .OrderBy(x => x).ToArray()
+                : Array.Empty<string>();
+
         private async Task LoadCoverAsync(MangaItem item, string mangaPath)
         {
             // 1. Tenta local
@@ -1335,13 +1507,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             // Busca EPUBs na pasta Converted
             string convertedFolder = Path.Combine(path, "Converted");
-            var files = Directory.Exists(convertedFolder)
-                ? Directory.GetFiles(convertedFolder, "*.mobi").OrderBy(x => x).ToArray()
-                : Array.Empty<string>();
+            var files = GetConvertedFiles(convertedFolder);
 
             if (files.Length == 0)
             {
-                Log("No MOBI files found in /Converted. Please run Convert to MOBI first.");
+                Log("No converted files found in /Converted. Please run Convert first.");
                 return;
             }
 
@@ -1503,8 +1673,32 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             try
             {
+                // 1. Remove a pasta do mangá
                 Directory.Delete(mangaFolder, recursive: true);
                 Log($"🗑 Removed from Kindle: {selected.Name}");
+
+                // 2. Remove thumbnails relacionados ao mangá
+                string kindleRoot = Path.GetDirectoryName(kindlePath) ?? kindlePath;
+                string thumbnailsFolder = Path.Combine(kindleRoot, "system", "thumbnails");
+                int thumbsDeleted = 0;
+
+                if (Directory.Exists(thumbnailsFolder))
+                {
+                    // Thumbnails têm nome baseado no path do arquivo
+                    // Formato: thumbnail_HASH_EBOK_portrait.jpg
+                    // Deleta todos os thumbs — o Kindle regenera os válidos no rescan
+                    var thumbs = Directory.GetFiles(thumbnailsFolder, "*.jpg");
+                    foreach (var thumb in thumbs)
+                    {
+                        try { File.Delete(thumb); thumbsDeleted++; }
+                        catch { }
+                    }
+                    Log($"🗑 Removed {thumbsDeleted} thumbnail(s).");
+                }
+
+                // 3. Trigger de rescan
+                TriggerKindleRescan(kindlePath);
+
                 RefreshSelectedStatus();
             }
             catch (Exception ex)
@@ -1559,8 +1753,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnCleanup.IsEnabled = hasComicInfo;
             SetCheck(BtnCleanup, cleaned);
 
-            bool hasConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
-                                Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.mobi").Length > 0;
+            bool hasConverted = HasConvertedFiles(Path.Combine(mangaPath, "Converted"));
 
             BtnConvert.IsEnabled = cleaned;
             SetCheck(BtnConvert, hasConverted);
@@ -1725,28 +1918,31 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     {
                         using var original = System.Drawing.Image.FromFile(img);
 
-                        // Calcula proporção mantendo aspect ratio
-                        float ratioW = (float)device.Width / original.Width;
-                        float ratioH = (float)device.Height / original.Height;
-                        float ratio = Math.Min(ratioW, ratioH);
-
-                        int newW = (int)(original.Width * ratio);
-                        int newH = (int)(original.Height * ratio);
-
-                        // Detecta e remove bordas brancas/pretas
+                        // Detecta e remove bordas
                         using var cropped = CropBorders((System.Drawing.Bitmap)original);
 
-                        using var resized = new System.Drawing.Bitmap(newW, newH);
-                        using var g = System.Drawing.Graphics.FromImage(resized);
-                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(cropped, 0, 0, newW, newH);
+                        // Calcula proporção mantendo aspect ratio
+                        float ratioW = (float)device.Width / cropped.Width;
+                        float ratioH = (float)device.Height / cropped.Height;
+                        float ratio = Math.Min(ratioW, ratioH);
+                        int newW = (int)(cropped.Width * ratio);
+                        int newH = (int)(cropped.Height * ratio);
 
-                        // Salva sobrescrevendo o original
+                        using var resized = new System.Drawing.Bitmap(newW, newH);
+                        using (var g = System.Drawing.Graphics.FromImage(resized))
+                        {
+                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                            g.DrawImage(cropped, 0, 0, newW, newH);
+                        }
+
+                        // Converte para escala de cinza com ajustes de gamma/contraste/nitidez
+                        using var processed = ProcessForEInk(resized);
+
                         var format = img.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
                             ? System.Drawing.Imaging.ImageFormat.Png
                             : System.Drawing.Imaging.ImageFormat.Jpeg;
 
-                        resized.Save(img, format);
+                        processed.Save(img, format);
                     }
                     catch { /* ignora imagem com problema */ }
 
@@ -1803,7 +1999,218 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         }
 
         // ==============================
-        // 📗 CONVERT TO MOBI
+        // Processa imagem para tela E-Ink: grayscale + gamma + contraste + nitidez
+        private System.Drawing.Bitmap ProcessForEInk(System.Drawing.Bitmap src)
+        {
+            var result = new System.Drawing.Bitmap(src.Width, src.Height,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+            // ColorMatrix para escala de cinza com ajuste de contraste (similar ao KCC)
+            var cm = new System.Drawing.Imaging.ColorMatrix(new float[][]
+            {
+                new float[] { 0.299f, 0.299f, 0.299f, 0, 0 },
+                new float[] { 0.587f, 0.587f, 0.587f, 0, 0 },
+                new float[] { 0.114f, 0.114f, 0.114f, 0, 0 },
+                new float[] { 0,      0,      0,      1, 0 },
+                new float[] { 0,      0,      0,      0, 1 }
+            });
+
+            var attrs = new System.Drawing.Imaging.ImageAttributes();
+            attrs.SetColorMatrix(cm);
+
+            using (var g = System.Drawing.Graphics.FromImage(result))
+            {
+                g.DrawImage(src,
+                    new System.Drawing.Rectangle(0, 0, src.Width, src.Height),
+                    0, 0, src.Width, src.Height,
+                    System.Drawing.GraphicsUnit.Pixel, attrs);
+            }
+
+            // Aplica gamma (1.5 = mais brilhante para telas E-Ink)
+            ApplyGamma(result, 1.5f);
+
+            // Aplica nitidez (unsharp mask leve)
+            return ApplySharpen(result);
+        }
+
+        private void ApplyGamma(System.Drawing.Bitmap bmp, float gamma)
+        {
+            byte[] table = new byte[256];
+            for (int i = 0; i < 256; i++)
+                table[i] = (byte)Math.Min(255, (int)(255.0 * Math.Pow(i / 255.0, 1.0 / gamma)));
+
+            var data = bmp.LockBits(
+                new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height),
+                System.Drawing.Imaging.ImageLockMode.ReadWrite,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+            unsafe
+            {
+                byte* ptr = (byte*)data.Scan0;
+                int bytes = Math.Abs(data.Stride) * bmp.Height;
+                for (int i = 0; i < bytes; i += 4)
+                {
+                    ptr[i] = table[ptr[i]];     // B
+                    ptr[i + 1] = table[ptr[i + 1]]; // G
+                    ptr[i + 2] = table[ptr[i + 2]]; // R
+                }
+            }
+
+            bmp.UnlockBits(data);
+        }
+
+        private System.Drawing.Bitmap ApplySharpen(System.Drawing.Bitmap src)
+        {
+            // Kernel de nitidez leve
+            float[,] kernel = {
+                {  0, -1,  0 },
+                { -1,  5, -1 },
+                {  0, -1,  0 }
+            };
+
+            var result = new System.Drawing.Bitmap(src.Width, src.Height);
+
+            for (int y = 1; y < src.Height - 1; y++)
+            {
+                for (int x = 1; x < src.Width - 1; x++)
+                {
+                    float r = 0, g = 0, b = 0;
+                    for (int ky = -1; ky <= 1; ky++)
+                    {
+                        for (int kx = -1; kx <= 1; kx++)
+                        {
+                            var px = src.GetPixel(x + kx, y + ky);
+                            float k = kernel[ky + 1, kx + 1];
+                            r += px.R * k;
+                            g += px.G * k;
+                            b += px.B * k;
+                        }
+                    }
+                    result.SetPixel(x, y, System.Drawing.Color.FromArgb(
+                        Clamp(r), Clamp(g), Clamp(b)));
+                }
+            }
+            return result;
+        }
+
+        private static int Clamp(float v) => Math.Max(0, Math.Min(255, (int)v));
+
+        // ==============================
+        // 📗 CONVERT TO AZW3 via Kindle Previewer 3
+        // ==============================
+
+        /// <summary>
+        /// Converte um EPUB para AZW3 usando o Kindle Previewer 3 no modo CLI.
+        /// É exatamente o que o KCC faz internamente — sem precisar do KCC instalado.
+        /// Fluxo: EPUB → (cópia temp sem lock) → KindlePreviewer.exe -convert -output → AZW3
+        /// O tempEpub já é passado pelo chamador que garantiu que o arquivo está livre.
+        /// </summary>
+        private bool ConvertEpubToAzw3(string epubPath, string tempEpub, string outputFolder,
+            string previewerPath, out string azw3Path)
+        {
+            azw3Path = string.Empty;
+
+            string tempOut = Path.Combine(outputFolder, "temp_kp").Replace('/', '\\');
+            Directory.CreateDirectory(tempOut);
+
+            // tempEpub já foi copiado pelo chamador — sem risco de file lock
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = previewerPath,
+                    // Sintaxe correta do Kindle Previewer 3.x:
+                    // input primeiro, -convert depois, -output para a pasta de saída
+                    Arguments = $"\"{tempEpub}\" -convert -output \"{tempOut}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                Dispatcher.Invoke(() => Log($"[Previewer] Converting {Path.GetFileName(epubPath)}..."));
+                Dispatcher.Invoke(() => Log($"[Previewer] Args: {psi.Arguments}"));
+
+                using var proc = Process.Start(psi)!;
+
+                // Loga output em tempo real
+                proc.OutputDataReceived += (_, args) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(args.Data))
+                        Dispatcher.Invoke(() => Log($"  [kp] {args.Data}"));
+                };
+                proc.ErrorDataReceived += (_, args) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(args.Data))
+                        Dispatcher.Invoke(() => Log($"  [kp-err] {args.Data}"));
+                };
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                proc.WaitForExit();
+
+                // Mata qualquer janela GUI que o Previewer tenha aberto em background
+                foreach (var kp in Process.GetProcessesByName("Kindle Previewer 3"))
+                {
+                    try { kp.Kill(); } catch { }
+                }
+
+                // Log de debug: lista todos os arquivos criados na pasta temp
+                var allCreated = Directory.GetFiles(tempOut, "*.*", SearchOption.AllDirectories);
+                Dispatcher.Invoke(() =>
+                {
+                    Log($"[Previewer] exit={proc.ExitCode} | Files in temp: {allCreated.Length}");
+                    foreach (var f in allCreated)
+                        Log($"  → {f.Replace(tempOut, "")}");
+                });
+
+                // Procura AZW3 ou MOBI gerado diretamente
+                var generated = Directory.GetFiles(tempOut, "*.azw3", SearchOption.AllDirectories)
+                                          .Concat(Directory.GetFiles(tempOut, "*.mobi", SearchOption.AllDirectories))
+                                          .FirstOrDefault();
+
+                // O KP3 moderno gera KPF (que é um ZIP) — não contém AZW3 embutido.
+                // O próprio KPF é o formato de saída: renomear para .azw3 é suficiente para
+                // sideload via USB no Kindle (o dispositivo reconhece o conteúdo KF8 dentro).
+                if (generated == null)
+                {
+                    var kpf = Directory.GetFiles(tempOut, "*.kpf", SearchOption.AllDirectories).FirstOrDefault();
+                    if (kpf != null)
+                    {
+                        string kpfAsAzw3 = Path.ChangeExtension(kpf, ".azw3");
+                        File.Copy(kpf, kpfAsAzw3, overwrite: true);
+                        Dispatcher.Invoke(() => Log("[Previewer] KPF → .azw3 (formato Kindle nativo)"));
+                        generated = kpfAsAzw3;
+                    }
+                }
+
+                if (generated == null)
+                {
+                    Dispatcher.Invoke(() => Log($"⚠ Previewer exit {proc.ExitCode} — nenhum arquivo gerado, mantendo EPUB"));
+                    try { Directory.Delete(tempOut, recursive: true); } catch { }
+                    return false;
+                }
+
+                string ext = Path.GetExtension(generated);
+                string finalName = Path.GetFileNameWithoutExtension(epubPath) + ext;
+                azw3Path = Path.Combine(outputFolder, finalName);
+
+                if (File.Exists(azw3Path)) File.Delete(azw3Path);
+                File.Move(generated, azw3Path);
+
+                try { Directory.Delete(tempOut, recursive: true); } catch { }
+
+                Dispatcher.Invoke(() => Log($"[Previewer] ✓ {ext.ToUpper().TrimStart('.')} gerado: {finalName}"));
+                return true;
+            }
+            finally
+            {
+                // Garante limpeza do EPUB temporário em qualquer caso (sucesso, falha ou exceção)
+                try { File.Delete(tempEpub); } catch { }
+            }
+        }
+
+        // ==============================
+        // 📗 CONVERT TO EPUB
         // ==============================
         private async void Convert_Click(object sender, RoutedEventArgs e)
         {
@@ -1822,9 +2229,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 return;
             }
 
-            Log($"Converting {volumes.Length} volume(s) to MOBI...");
+            Log($"Converting {volumes.Length} volume(s) to EPUB...");
             var token = StartOperation();
             string convertedFolderCapture = convertedFolder;
+
+            // Pausa o watcher para evitar conflitos de arquivo
+            if (_watcher != null) _watcher.EnableRaisingEvents = false;
 
             await Task.Run(() =>
             {
@@ -1835,13 +2245,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 {
                     if (token.IsCancellationRequested) break;
                     string volName = Path.GetFileName(vol);
-                    string mobiPath = Path.Combine(convertedFolderCapture, $"{volName}.mobi");
+                    string epubPath = Path.Combine(convertedFolderCapture, $"{volName}.epub");
 
                     try
                     {
-                        if (File.Exists(mobiPath)) File.Delete(mobiPath);
+                        if (File.Exists(epubPath)) File.Delete(epubPath);
 
-                        // Coleta imagens dos capítulos em ordem
                         var imgFiles = Directory.GetFiles(vol, "*.*", SearchOption.AllDirectories)
                             .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
                                         f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
@@ -1851,44 +2260,122 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
                         if (imgFiles.Count == 0)
                         {
-                            Dispatcher.Invoke(() => Log($"⚠ No images found in {volName}, skipping."));
+                            Dispatcher.Invoke(() => Log($"⚠ No images in {volName}, skipping."));
                             current++;
                             continue;
                         }
 
-                        // Gera HTML com imagens embutidas em base64
-                        // O Kindle aceita HTML com imagens base64 e converte internamente
-                        var html = new System.Text.StringBuilder();
-                        html.AppendLine("<!DOCTYPE html>");
-                        html.AppendLine("<html><head>");
-                        html.AppendLine($"<title>{volName}</title>");
-                        html.AppendLine("<style>");
-                        html.AppendLine("body { margin:0; padding:0; background:#000; }");
-                        html.AppendLine("img { display:block; width:100%; height:auto; margin:0; padding:0; }");
-                        html.AppendLine("</style></head><body>");
-
-                        foreach (var imgFile in imgFiles)
+                        // Bloco using com chaves explícitas — garante que o zip é FECHADO
+                        // antes do File.Copy, evitando o "file is being used by another process"
+                        using (var zip = ZipFile.Open(epubPath, ZipArchiveMode.Create))
                         {
-                            string ext = Path.GetExtension(imgFile).ToLower();
-                            string mime = ext == ".png" ? "image/png" : "image/jpeg";
-                            string b64 = Convert.ToBase64String(File.ReadAllBytes(imgFile));
-                            html.AppendLine($"<img src=\"data:{mime};base64,{b64}\"/>");
-                        }
+                            // 1. mimetype DEVE ser entry 0, sem compressão e sem encoding BOM
+                            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+                            using (var s = mimeEntry.Open())
+                            {
+                                byte[] mimeBytes = System.Text.Encoding.ASCII.GetBytes("application/epub+zip");
+                                s.Write(mimeBytes, 0, mimeBytes.Length);
+                            }
 
-                        html.AppendLine("</body></html>");
+                            // 2. META-INF/container.xml
+                            var containerEntry = zip.CreateEntry("META-INF/container.xml");
+                            using (var w = new StreamWriter(containerEntry.Open(), System.Text.Encoding.UTF8))
+                                w.Write(@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<container version=""1.0"" xmlns=""urn:oasis:names:tc:opendocument:xmlns:container"">
+  <rootfiles>
+    <rootfile full-path=""OEBPS/content.opf"" media-type=""application/oebps-package+xml""/>
+  </rootfiles>
+</container>");
 
-                        // Salva como .mobi (HTML renomeado — Kindle aceita via Send to Kindle ou USB)
-                        // Para USB, salva como .html e o Kindle converte automaticamente
-                        // Mas para melhor compatibilidade, usamos extensão .mobi com conteúdo HTML
-                        File.WriteAllText(mobiPath, html.ToString(), System.Text.Encoding.UTF8);
+                            var manifest = new System.Text.StringBuilder();
+                            var spine = new System.Text.StringBuilder();
+                            var navPoints = new System.Text.StringBuilder();
+                            int idx = 1;
+
+                            foreach (var imgFile in imgFiles)
+                            {
+                                string ext = Path.GetExtension(imgFile).ToLowerInvariant();
+                                string mime = ext == ".png" ? "image/png" : "image/jpeg";
+                                string imgId = $"img{idx:D4}";
+                                string pageId = $"page{idx:D4}";
+                                string imgPath = $"images/{imgId}{ext}";
+                                string pagePath = $"pages/{pageId}.xhtml";
+
+                                // Copia imagem para o EPUB
+                                var imgEntry = zip.CreateEntry($"OEBPS/{imgPath}");
+                                using (var s = imgEntry.Open())
+                                using (var fs = File.OpenRead(imgFile))
+                                    fs.CopyTo(s);
+
+                                // Página XHTML
+                                var pageEntry = zip.CreateEntry($"OEBPS/{pagePath}");
+                                using (var w = new StreamWriter(pageEntry.Open(), System.Text.Encoding.UTF8))
+                                    w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<!DOCTYPE html>
+<html xmlns=""http://www.w3.org/1999/xhtml"">
+<head>
+  <title>Page {idx}</title>
+  <style>body{{margin:0;padding:0;background:#000;}}img{{display:block;width:100%;height:auto;}}</style>
+</head>
+<body><img src=""../{imgPath}"" alt=""Page {idx}""/></body>
+</html>");
+
+                                manifest.AppendLine($@"    <item id=""{imgId}"" href=""{imgPath}"" media-type=""{mime}""/>");
+                                manifest.AppendLine($@"    <item id=""{pageId}"" href=""{pagePath}"" media-type=""application/xhtml+xml""/>");
+                                spine.AppendLine($@"    <itemref idref=""{pageId}""/>");
+                                navPoints.AppendLine($@"    <navPoint id=""nav{idx}"" playOrder=""{idx}"">
+      <navLabel><text>Page {idx}</text></navLabel>
+      <content src=""{pagePath}""/>
+    </navPoint>");
+                                idx++;
+                            }
+
+                            // 3. content.opf
+                            var uid = Guid.NewGuid().ToString();
+                            var opfEntry = zip.CreateEntry("OEBPS/content.opf");
+                            using (var w = new StreamWriter(opfEntry.Open(), System.Text.Encoding.UTF8))
+                                w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<package xmlns=""http://www.idpf.org/2007/opf"" version=""2.0"" unique-identifier=""uid"">
+  <metadata xmlns:dc=""http://purl.org/dc/elements/1.1/"" xmlns:opf=""http://www.idpf.org/2007/opf"">
+    <dc:title>{volName}</dc:title>
+    <dc:identifier id=""uid"">{uid}</dc:identifier>
+    <dc:language>pt</dc:language>
+    <dc:creator>{mangaName}</dc:creator>
+    <meta name=""cover"" content=""img0001""/>
+  </metadata>
+  <manifest>
+    <item id=""ncx"" href=""toc.ncx"" media-type=""application/x-dtbncx+xml""/>
+{manifest}  </manifest>
+  <spine toc=""ncx"" page-progression-direction=""rtl"">
+{spine}  </spine>
+</package>");
+
+                            // 4. toc.ncx
+                            var ncxEntry = zip.CreateEntry("OEBPS/toc.ncx");
+                            using (var w = new StreamWriter(ncxEntry.Open(), System.Text.Encoding.UTF8))
+                                w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<ncx xmlns=""http://www.daisy.org/z3986/2005/ncx/"" version=""2005-1"">
+  <head>
+    <meta name=""dtb:uid"" content=""{uid}""/>
+    <meta name=""dtb:depth"" content=""1""/>
+    <meta name=""dtb:totalPageCount"" content=""0""/>
+    <meta name=""dtb:maxPageNumber"" content=""0""/>
+  </head>
+  <docTitle><text>{volName}</text></docTitle>
+  <navMap>
+{navPoints}  </navMap>
+</ncx>");
+                        } // ← zip fechado aqui — arquivo liberado antes do File.Copy
 
                         current++;
-                        long fileSize = new FileInfo(mobiPath).Length;
+
+                        long fileSize = new FileInfo(epubPath).Length;
+                        string finalName = Path.GetFileName(epubPath);
                         Dispatcher.Invoke(() =>
                         {
                             ProgressBar.Value = (double)current / total * 100;
                             ProgressText.Text = $"{current} / {total}";
-                            Log($"✓ {volName}.mobi ({fileSize / 1024} KB)");
+                            Log($"✓ {finalName} ({fileSize / 1024} KB)");
                         });
                     }
                     catch (Exception ex)
@@ -1900,7 +2387,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
                 Dispatcher.Invoke(() =>
                 {
-                    Log($"Conversion complete. {current} MOBI(s) saved to /Converted.");
+                    if (_watcher != null) _watcher.EnableRaisingEvents = true;
+                    Log($"Conversion complete. {current} file(s) saved to /Converted.");
                     EndOperation();
                     RefreshSelectedStatus();
                 });

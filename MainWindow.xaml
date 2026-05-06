@@ -286,7 +286,7 @@
                     </Button.Template>
                 </Button>
 
-                <!-- CONVERT TO MOBI -->
+                <!-- CONVERT TO EPUB -->
                 <Button x:Name="BtnConvert" Click="Convert_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -297,7 +297,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#E85D04"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="📗  Convert to MOBI" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="📗  Convert to EPUB" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
