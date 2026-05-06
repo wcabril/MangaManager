@@ -297,7 +297,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#E85D04"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="📗  Convert to EPUB" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="📗  Convert to CBZ" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>

@@ -158,17 +158,17 @@ namespace MangaManager
 
             // Passa todos os EPUBs da pasta Converted para o KCC
             string convertedFolder = Path.Combine(path, "Converted");
-            var epubs = Directory.Exists(convertedFolder)
-                ? Directory.GetFiles(convertedFolder, "*.epub").OrderBy(x => x).ToArray()
+            var cbzFiles = Directory.Exists(convertedFolder)
+                ? Directory.GetFiles(convertedFolder, "*.cbz").OrderBy(x => x).ToArray()
                 : Array.Empty<string>();
 
-            if (epubs.Length == 0)
+            if (cbzFiles.Length == 0)
             {
-                Log("No EPUB files found in /Converted. Run Convert to EPUB first.");
+                Log("No CBZ files found in /Converted. Run Convert to CBZ first.");
                 return;
             }
 
-            var args = string.Join(" ", epubs.Select(f => $"\"{f}\""));
+            var args = string.Join(" ", cbzFiles.Select(f => $"\"{f}\""));
             Process.Start(new ProcessStartInfo
             {
                 FileName = kccPath,
@@ -176,7 +176,7 @@ namespace MangaManager
                 UseShellExecute = false,
             });
 
-            Log($"▶ KCC opened with {epubs.Length} EPUB(s).");
+            Log($"▶ KCC opened with {cbzFiles.Length} CBZ(s).");
         }
 
         // ==============================
@@ -433,13 +433,13 @@ namespace MangaManager
 
         private static bool HasConvertedFiles(string convertedFolder) =>
             Directory.Exists(convertedFolder) && (
-                Directory.GetFiles(convertedFolder, "*.epub").Length > 0 ||
+                Directory.GetFiles(convertedFolder, "*.cbz").Length > 0 ||
                 Directory.GetFiles(convertedFolder, "*.mobi").Length > 0 ||
                 Directory.GetFiles(convertedFolder, "*.azw3").Length > 0);
 
         private static string[] GetConvertedFiles(string convertedFolder) =>
             Directory.Exists(convertedFolder)
-                ? Directory.GetFiles(convertedFolder, "*.epub")
+                ? Directory.GetFiles(convertedFolder, "*.cbz")
                     .Concat(Directory.GetFiles(convertedFolder, "*.mobi"))
                     .Concat(Directory.GetFiles(convertedFolder, "*.azw3"))
                     .OrderBy(x => x).ToArray()
@@ -1688,9 +1688,9 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnConvert.IsEnabled = cleaned;
             SetCheck(BtnConvert, hasConverted);
 
-            bool hasEpubInConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
-                                      Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.epub").Length > 0;
-            BtnOpenKCC.IsEnabled = hasEpubInConverted;
+            bool hasCbzInConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
+                                     Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.cbz").Length > 0;
+            BtnOpenKCC.IsEnabled = hasCbzInConverted;
 
             BtnSendToKindle.IsEnabled = hasConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
@@ -2050,11 +2050,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 return;
             }
 
-            Log($"Converting {volumes.Length} volume(s) to EPUB...");
+            Log($"Packing {volumes.Length} volume(s) to CBZ...");
             var token = StartOperation();
             string convertedFolderCapture = convertedFolder;
 
-            // Pausa o watcher para evitar conflitos de arquivo
             if (_watcher != null) _watcher.EnableRaisingEvents = false;
 
             await Task.Run(() =>
@@ -2066,16 +2065,17 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 {
                     if (token.IsCancellationRequested) break;
                     string volName = Path.GetFileName(vol);
-                    string epubPath = Path.Combine(convertedFolderCapture, $"{volName}.epub");
+                    string cbzPath = Path.Combine(convertedFolderCapture, $"{volName}.cbz");
 
                     try
                     {
-                        if (File.Exists(epubPath)) File.Delete(epubPath);
+                        if (File.Exists(cbzPath)) File.Delete(cbzPath);
 
                         var imgFiles = Directory.GetFiles(vol, "*.*", SearchOption.AllDirectories)
                             .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
                                         f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                                        f.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                                        f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                                        f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
                             .OrderBy(f => f)
                             .ToList();
 
@@ -2086,117 +2086,29 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                             continue;
                         }
 
-                        // Bloco using com chaves explícitas — garante que o zip é FECHADO
-                        // antes do File.Copy, evitando o "file is being used by another process"
-                        using (var zip = ZipFile.Open(epubPath, ZipArchiveMode.Create))
+                        // CBZ = ZIP com imagens nomeadas sequencialmente
+                        using (var zip = ZipFile.Open(cbzPath, ZipArchiveMode.Create))
                         {
-                            // 1. mimetype DEVE ser entry 0, sem compressão e sem encoding BOM
-                            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
-                            using (var s = mimeEntry.Open())
-                            {
-                                byte[] mimeBytes = System.Text.Encoding.ASCII.GetBytes("application/epub+zip");
-                                s.Write(mimeBytes, 0, mimeBytes.Length);
-                            }
-
-                            // 2. META-INF/container.xml
-                            var containerEntry = zip.CreateEntry("META-INF/container.xml");
-                            using (var w = new StreamWriter(containerEntry.Open(), System.Text.Encoding.UTF8))
-                                w.Write(@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<container version=""1.0"" xmlns=""urn:oasis:names:tc:opendocument:xmlns:container"">
-  <rootfiles>
-    <rootfile full-path=""OEBPS/content.opf"" media-type=""application/oebps-package+xml""/>
-  </rootfiles>
-</container>");
-
-                            var manifest = new System.Text.StringBuilder();
-                            var spine = new System.Text.StringBuilder();
-                            var navPoints = new System.Text.StringBuilder();
                             int idx = 1;
-
                             foreach (var imgFile in imgFiles)
                             {
                                 string ext = Path.GetExtension(imgFile).ToLowerInvariant();
-                                string mime = ext == ".png" ? "image/png" : "image/jpeg";
-                                string imgId = $"img{idx:D4}";
-                                string pageId = $"page{idx:D4}";
-                                string imgPath = $"images/{imgId}{ext}";
-                                string pagePath = $"pages/{pageId}.xhtml";
-
-                                // Copia imagem para o EPUB
-                                var imgEntry = zip.CreateEntry($"OEBPS/{imgPath}");
-                                using (var s = imgEntry.Open())
-                                using (var fs = File.OpenRead(imgFile))
-                                    fs.CopyTo(s);
-
-                                // Página XHTML
-                                var pageEntry = zip.CreateEntry($"OEBPS/{pagePath}");
-                                using (var w = new StreamWriter(pageEntry.Open(), System.Text.Encoding.UTF8))
-                                    w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<!DOCTYPE html>
-<html xmlns=""http://www.w3.org/1999/xhtml"">
-<head>
-  <title>Page {idx}</title>
-  <style>body{{margin:0;padding:0;background:#000;}}img{{display:block;width:100%;height:auto;}}</style>
-</head>
-<body><img src=""../{imgPath}"" alt=""Page {idx}""/></body>
-</html>");
-
-                                manifest.AppendLine($@"    <item id=""{imgId}"" href=""{imgPath}"" media-type=""{mime}""/>");
-                                manifest.AppendLine($@"    <item id=""{pageId}"" href=""{pagePath}"" media-type=""application/xhtml+xml""/>");
-                                spine.AppendLine($@"    <itemref idref=""{pageId}""/>");
-                                navPoints.AppendLine($@"    <navPoint id=""nav{idx}"" playOrder=""{idx}"">
-      <navLabel><text>Page {idx}</text></navLabel>
-      <content src=""{pagePath}""/>
-    </navPoint>");
+                                string entryName = $"{idx:D4}{ext}";
+                                var entry = zip.CreateEntry(entryName, CompressionLevel.NoCompression);
+                                using var dst = entry.Open();
+                                using var src = File.OpenRead(imgFile);
+                                src.CopyTo(dst);
                                 idx++;
                             }
-
-                            // 3. content.opf
-                            var uid = Guid.NewGuid().ToString();
-                            var opfEntry = zip.CreateEntry("OEBPS/content.opf");
-                            using (var w = new StreamWriter(opfEntry.Open(), System.Text.Encoding.UTF8))
-                                w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<package xmlns=""http://www.idpf.org/2007/opf"" version=""2.0"" unique-identifier=""uid"">
-  <metadata xmlns:dc=""http://purl.org/dc/elements/1.1/"" xmlns:opf=""http://www.idpf.org/2007/opf"">
-    <dc:title>{volName}</dc:title>
-    <dc:identifier id=""uid"">{uid}</dc:identifier>
-    <dc:language>pt</dc:language>
-    <dc:creator>{mangaName}</dc:creator>
-    <meta name=""cover"" content=""img0001""/>
-  </metadata>
-  <manifest>
-    <item id=""ncx"" href=""toc.ncx"" media-type=""application/x-dtbncx+xml""/>
-{manifest}  </manifest>
-  <spine toc=""ncx"" page-progression-direction=""rtl"">
-{spine}  </spine>
-</package>");
-
-                            // 4. toc.ncx
-                            var ncxEntry = zip.CreateEntry("OEBPS/toc.ncx");
-                            using (var w = new StreamWriter(ncxEntry.Open(), System.Text.Encoding.UTF8))
-                                w.Write($@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<ncx xmlns=""http://www.daisy.org/z3986/2005/ncx/"" version=""2005-1"">
-  <head>
-    <meta name=""dtb:uid"" content=""{uid}""/>
-    <meta name=""dtb:depth"" content=""1""/>
-    <meta name=""dtb:totalPageCount"" content=""0""/>
-    <meta name=""dtb:maxPageNumber"" content=""0""/>
-  </head>
-  <docTitle><text>{volName}</text></docTitle>
-  <navMap>
-{navPoints}  </navMap>
-</ncx>");
-                        } // ← zip fechado aqui — arquivo liberado antes do File.Copy
+                        }
 
                         current++;
-
-                        long fileSize = new FileInfo(epubPath).Length;
-                        string finalName = Path.GetFileName(epubPath);
+                        long fileSize = new FileInfo(cbzPath).Length;
                         Dispatcher.Invoke(() =>
                         {
                             ProgressBar.Value = (double)current / total * 100;
                             ProgressText.Text = $"{current} / {total}";
-                            Log($"✓ {finalName} ({fileSize / 1024} KB)");
+                            Log($"✓ {volName}.cbz ({fileSize / 1024} KB, {imgFiles.Count} pages)");
                         });
                     }
                     catch (Exception ex)
@@ -2209,7 +2121,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 Dispatcher.Invoke(() =>
                 {
                     if (_watcher != null) _watcher.EnableRaisingEvents = true;
-                    Log($"Conversion complete. {current} file(s) saved to /Converted.");
+                    Log($"Done. {current} CBZ(s) saved to /Converted.");
                     EndOperation();
                     RefreshSelectedStatus();
 
@@ -2217,7 +2129,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     if (!string.IsNullOrEmpty(kccPath) && File.Exists(kccPath))
                         OpenInKCC_Click(this, new RoutedEventArgs());
                     else
-                        Log("ℹ Click 'Open in KCC' to convert the EPUB(s) to MOBI.");
+                        Log("ℹ Click 'Open in KCC' to convert the CBZ(s) to MOBI.");
                 });
             });
         }
