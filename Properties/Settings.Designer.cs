@@ -47,5 +47,16 @@ namespace MangaManager.Properties {
             }
         }
         
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string KccPath {
+            get {
+                return ((string)(this["KccPath"]));
+            }
+            set {
+                this["KccPath"] = value;
+            }
+        }
     }
 }

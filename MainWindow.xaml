@@ -309,6 +309,29 @@
                     </Button.Template>
                 </Button>
 
+                <!-- OPEN IN KCC -->
+                <Button x:Name="BtnOpenKCC" Click="OpenInKCC_Click" Height="32" Margin="0,4,0,0">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#C0392B"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                    <TextBlock Text="🔁  Open in KCC" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
                 <!-- VOLUME SELECTOR -->
                 <StackPanel Margin="0,8,0,0">
                     <TextBlock Text="Select which volumes you want to send to Kindle"

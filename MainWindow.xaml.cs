@@ -18,6 +18,7 @@ namespace MangaManager
     {
         string basePath = string.Empty;
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
+        string kccPath = string.Empty;
         CancellationTokenSource? _cts;
         FileSystemWatcher? _watcher;
 
@@ -48,6 +49,7 @@ namespace MangaManager
                 LoadMangas();
             }
 
+            Loaded += (s, e) => DetectKCC();
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -94,6 +96,87 @@ namespace MangaManager
                 else
                     item.ChkKindle = "";
             }
+        }
+
+        // ==============================
+        // 🔁 KCC
+        // ==============================
+        private void DetectKCC()
+        {
+            var savedKcc = Properties.Settings.Default.KccPath;
+            if (!string.IsNullOrEmpty(savedKcc) && File.Exists(savedKcc))
+            {
+                kccPath = savedKcc;
+                Log($"✓ KCC found: {kccPath}");
+                return;
+            }
+
+            string[] candidates = {
+                @"C:\Program Files\KCC\KCC_c2e.exe",
+                @"C:\Program Files (x86)\KCC\KCC_c2e.exe",
+                @"C:\Program Files\Kindle Comic Converter\KCC_c2e.exe",
+                @"C:\Program Files (x86)\Kindle Comic Converter\KCC_c2e.exe",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "KCC", "KCC_c2e.exe"),
+            };
+
+            var found = candidates.FirstOrDefault(File.Exists);
+            if (found != null)
+            {
+                kccPath = found;
+                Properties.Settings.Default.KccPath = kccPath;
+                Properties.Settings.Default.Save();
+                Log($"✓ KCC found: {kccPath}");
+            }
+        }
+
+        private void OpenInKCC_Click(object sender, RoutedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path == null) return;
+
+            // Se KCC não foi detectado, pede ao usuário para localizá-lo
+            if (string.IsNullOrEmpty(kccPath) || !File.Exists(kccPath))
+            {
+                var dialog = new WinForms.OpenFileDialog
+                {
+                    Title = "Locate KCC (KCC_c2e.exe)",
+                    Filter = "KCC|KCC_c2e.exe|All executables|*.exe",
+                };
+
+                if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
+                {
+                    Log("⚠ KCC not found. Please locate KCC_c2e.exe.");
+                    return;
+                }
+
+                kccPath = dialog.FileName;
+                Properties.Settings.Default.KccPath = kccPath;
+                Properties.Settings.Default.Save();
+                Log($"✓ KCC set: {kccPath}");
+            }
+
+            // Passa todos os EPUBs da pasta Converted para o KCC
+            string convertedFolder = Path.Combine(path, "Converted");
+            var epubs = Directory.Exists(convertedFolder)
+                ? Directory.GetFiles(convertedFolder, "*.epub").OrderBy(x => x).ToArray()
+                : Array.Empty<string>();
+
+            if (epubs.Length == 0)
+            {
+                Log("No EPUB files found in /Converted. Run Convert to EPUB first.");
+                return;
+            }
+
+            var args = string.Join(" ", epubs.Select(f => $"\"{f}\""));
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = kccPath,
+                Arguments = args,
+                UseShellExecute = false,
+            });
+
+            Log($"▶ KCC opened with {epubs.Length} EPUB(s).");
         }
 
         // ==============================
@@ -1605,6 +1688,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnConvert.IsEnabled = cleaned;
             SetCheck(BtnConvert, hasConverted);
 
+            bool hasEpubInConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
+                                      Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.epub").Length > 0;
+            BtnOpenKCC.IsEnabled = hasEpubInConverted;
+
             BtnSendToKindle.IsEnabled = hasConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
@@ -1683,6 +1770,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnResize.IsEnabled = false;
             BtnConvert.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
+            BtnOpenKCC.IsEnabled = false;
             BtnSendToKindle.IsEnabled = false;
             BtnRemoveFromKindle.IsEnabled = false;
         }
@@ -2124,6 +2212,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     Log($"Conversion complete. {current} file(s) saved to /Converted.");
                     EndOperation();
                     RefreshSelectedStatus();
+
+                    // Abre KCC automaticamente se estiver configurado
+                    if (!string.IsNullOrEmpty(kccPath) && File.Exists(kccPath))
+                        OpenInKCC_Click(this, new RoutedEventArgs());
+                    else
+                        Log("ℹ Click 'Open in KCC' to convert the EPUB(s) to MOBI.");
                 });
             });
         }
