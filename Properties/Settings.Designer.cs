@@ -47,16 +47,5 @@ namespace MangaManager.Properties {
             }
         }
         
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("")]
-        public string KindlePreviewerPath {
-            get {
-                return ((string)(this["KindlePreviewerPath"]));
-            }
-            set {
-                this["KindlePreviewerPath"] = value;
-            }
-        }
     }
 }
