@@ -1435,13 +1435,15 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             string mangaName = (MangaList.SelectedItem as MangaItem)!.Name;
 
-            // Busca EPUBs na pasta Converted
+            // Busca MOBIs na pasta Converted
             string convertedFolder = Path.Combine(path, "Converted");
-            var files = GetConvertedFiles(convertedFolder);
+            var files = Directory.Exists(convertedFolder)
+                ? Directory.GetFiles(convertedFolder, "*.mobi").OrderBy(x => x).ToArray()
+                : Array.Empty<string>();
 
             if (files.Length == 0)
             {
-                Log("No converted files found in /Converted. Please run Convert first.");
+                Log("No .mobi files found in /Converted. Convert the CBZ in KCC first.");
                 return;
             }
 
@@ -1688,11 +1690,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnConvert.IsEnabled = cleaned;
             SetCheck(BtnConvert, hasConverted);
 
-            bool hasCbzInConverted = Directory.Exists(Path.Combine(mangaPath, "Converted")) &&
-                                     Directory.GetFiles(Path.Combine(mangaPath, "Converted"), "*.cbz").Length > 0;
+            string convertedDir = Path.Combine(mangaPath, "Converted");
+            bool hasCbzInConverted = Directory.Exists(convertedDir) &&
+                                     Directory.GetFiles(convertedDir, "*.cbz").Length > 0;
             BtnOpenKCC.IsEnabled = hasCbzInConverted;
 
-            BtnSendToKindle.IsEnabled = hasConverted;
+            bool hasMobiInConverted = Directory.Exists(convertedDir) &&
+                                      Directory.GetFiles(convertedDir, "*.mobi").Length > 0;
+            BtnSendToKindle.IsEnabled = hasMobiInConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
 
