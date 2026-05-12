@@ -130,7 +130,7 @@ namespace MangaManager
             }
         }
 
-        private void OpenInKCC_Click(object sender, RoutedEventArgs e)
+        private async void OpenInKCC_Click(object sender, RoutedEventArgs e)
         {
             var path = GetSelectedPath();
             if (path == null) return;
@@ -156,7 +156,6 @@ namespace MangaManager
                 Log($"✓ KCC set: {kccPath}");
             }
 
-            // Passa todos os EPUBs da pasta Converted para o KCC
             string convertedFolder = Path.Combine(path, "Converted");
             var cbzFiles = Directory.Exists(convertedFolder)
                 ? Directory.GetFiles(convertedFolder, "*.cbz").OrderBy(x => x).ToArray()
@@ -168,17 +167,49 @@ namespace MangaManager
                 return;
             }
 
-            // -o define a pasta de saída; -f MOBI garante formato correto
+            // Roda KCC_c2e em modo headless: sem GUI, saída direto em /Converted
             var inputArgs = string.Join(" ", cbzFiles.Select(f => $"\"{f}\""));
             var args = $"-o \"{convertedFolder}\" -f MOBI {inputArgs}";
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = kccPath,
-                Arguments = args,
-                UseShellExecute = false,
-            });
 
-            Log($"▶ KCC opened with {cbzFiles.Length} CBZ(s). Output → /Converted");
+            Log($"▶ KCC converting {cbzFiles.Length} CBZ(s) to MOBI...");
+            var token = StartOperation();
+
+            await Task.Run(() =>
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = kccPath,
+                    Arguments = args,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                using var proc = Process.Start(psi);
+                if (proc == null)
+                {
+                    Dispatcher.Invoke(() => Log("⚠ Failed to start KCC."));
+                    return;
+                }
+
+                proc.OutputDataReceived += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"KCC: {ev.Data}")); };
+                proc.ErrorDataReceived  += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"KCC: {ev.Data}")); };
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                proc.WaitForExit();
+
+                Dispatcher.Invoke(() =>
+                {
+                    if (proc.ExitCode == 0)
+                        Log("✓ KCC conversion complete. MOBI(s) saved to /Converted.");
+                    else
+                        Log($"⚠ KCC finished with exit code {proc.ExitCode}. Check output above.");
+
+                    EndOperation();
+                    RefreshSelectedStatus();
+                });
+            });
         }
 
         // ==============================
