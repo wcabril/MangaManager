@@ -168,7 +168,9 @@ namespace MangaManager
                 return;
             }
 
-            var args = string.Join(" ", cbzFiles.Select(f => $"\"{f}\""));
+            // -o define a pasta de saída; -f MOBI garante formato correto
+            var inputArgs = string.Join(" ", cbzFiles.Select(f => $"\"{f}\""));
+            var args = $"-o \"{convertedFolder}\" -f MOBI {inputArgs}";
             Process.Start(new ProcessStartInfo
             {
                 FileName = kccPath,
@@ -176,7 +178,7 @@ namespace MangaManager
                 UseShellExecute = false,
             });
 
-            Log($"▶ KCC opened with {cbzFiles.Length} CBZ(s).");
+            Log($"▶ KCC opened with {cbzFiles.Length} CBZ(s). Output → /Converted");
         }
 
         // ==============================
