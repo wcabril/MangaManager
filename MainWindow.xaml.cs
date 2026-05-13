@@ -18,7 +18,6 @@ namespace MangaManager
     {
         string basePath = string.Empty;
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
-        string kccPath = string.Empty;
         CancellationTokenSource? _cts;
         FileSystemWatcher? _watcher;
 
@@ -31,7 +30,7 @@ namespace MangaManager
         {
             InitializeComponent();
             ResetButtonStates();
-            InitializeDeviceCombo();
+            InitializeKccProfileCombo();
 
             // Registra o hook para detectar dispositivos USB
             SourceInitialized += (s, e) =>
@@ -49,7 +48,6 @@ namespace MangaManager
                 LoadMangas();
             }
 
-            Loaded += (s, e) => DetectKCC();
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -99,113 +97,176 @@ namespace MangaManager
         }
 
         // ==============================
-        // 🔁 KCC
+        // ⚙ KCC CLI
         // ==============================
-        private void DetectKCC()
+        private void InitializeKccProfileCombo()
         {
-            var savedKcc = Properties.Settings.Default.KccPath;
-            if (!string.IsNullOrEmpty(savedKcc) && File.Exists(savedKcc))
+            var profiles = new[]
             {
-                kccPath = savedKcc;
-                Log($"✓ KCC found: {kccPath}");
-                return;
-            }
-
-            string[] candidates = {
-                @"C:\Program Files\KCC\KCC_c2e.exe",
-                @"C:\Program Files (x86)\KCC\KCC_c2e.exe",
-                @"C:\Program Files\Kindle Comic Converter\KCC_c2e.exe",
-                @"C:\Program Files (x86)\Kindle Comic Converter\KCC_c2e.exe",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "KCC", "KCC_c2e.exe"),
+                "Kindle Paperwhite 1/2/3 (KPW)",
+                "Kindle Paperwhite 4/5 (KPW5)",
+                "Kindle Paperwhite 11th Gen (KPW5)",
+                "Kindle Oasis (KO)",
+                "Kindle Scribe (KS)",
+                "Kindle Basic 2022 (K11)",
             };
 
-            var found = candidates.FirstOrDefault(File.Exists);
-            if (found != null)
+            KccProfileCombo.ItemsSource = profiles;
+
+            var saved = Properties.Settings.Default.KindleDevice;
+            var match = profiles.FirstOrDefault(p => p == saved);
+            KccProfileCombo.SelectedItem = match ?? profiles[1]; // default KPW5
+
+            KccProfileCombo.SelectionChanged += (s, e) =>
             {
-                kccPath = found;
-                Properties.Settings.Default.KccPath = kccPath;
-                Properties.Settings.Default.Save();
-                Log($"✓ KCC found: {kccPath}");
-            }
+                if (KccProfileCombo.SelectedItem is string selected)
+                {
+                    Properties.Settings.Default.KindleDevice = selected;
+                    Properties.Settings.Default.Save();
+                }
+            };
         }
 
-        private async void OpenInKCC_Click(object sender, RoutedEventArgs e)
+        private string GetKccProfile() => KccProfileCombo.SelectedItem?.ToString() switch
+        {
+            "Kindle Paperwhite 1/2/3 (KPW)"        => "KPW",
+            "Kindle Paperwhite 4/5 (KPW5)"         => "KPW5",
+            "Kindle Paperwhite 11th Gen (KPW5)"    => "KPW5",
+            "Kindle Oasis (KO)"                    => "KO",
+            "Kindle Scribe (KS)"                   => "KS",
+            "Kindle Basic 2022 (K11)"              => "K11",
+            _                                      => "KPW5",
+        };
+
+        private string? FindKccCli()
+        {
+            // 1. Tenta via PATH (where kcc-c2e)
+            foreach (var cmd in new[] { "kcc-c2e", "kcc-c2e.exe" })
+            {
+                try
+                {
+                    using var which = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "where",
+                        Arguments = cmd,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                    });
+                    var output = which?.StandardOutput.ReadToEnd().Trim();
+                    which?.WaitForExit();
+                    if (!string.IsNullOrEmpty(output))
+                        return output.Split('\n')[0].Trim();
+                }
+                catch { }
+            }
+
+            // 2. Locais comuns de instalação via pip
+            string pyBase = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "AppData", "Local", "Programs", "Python");
+
+            if (Directory.Exists(pyBase))
+            {
+                var exe = Directory.GetFiles(pyBase, "kcc-c2e.exe", SearchOption.AllDirectories)
+                                   .FirstOrDefault();
+                if (exe != null) return exe;
+            }
+
+            // 3. Python no AppData\Roaming (pip --user)
+            string roaming = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Python");
+
+            if (Directory.Exists(roaming))
+            {
+                var exe = Directory.GetFiles(roaming, "kcc-c2e.exe", SearchOption.AllDirectories)
+                                   .FirstOrDefault();
+                if (exe != null) return exe;
+            }
+
+            return null;
+        }
+
+        private async void KCC_Click(object sender, RoutedEventArgs e)
         {
             var path = GetSelectedPath();
             if (path == null) return;
 
-            // Se KCC não foi detectado, pede ao usuário para localizá-lo
-            if (string.IsNullOrEmpty(kccPath) || !File.Exists(kccPath))
+            string? kccExe = FindKccCli();
+            if (kccExe == null)
             {
-                var dialog = new WinForms.OpenFileDialog
-                {
-                    Title = "Locate KCC (KCC_c2e.exe)",
-                    Filter = "KCC|KCC_c2e.exe|All executables|*.exe",
-                };
-
-                if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
-                {
-                    Log("⚠ KCC not found. Please locate KCC_c2e.exe.");
-                    return;
-                }
-
-                kccPath = dialog.FileName;
-                Properties.Settings.Default.KccPath = kccPath;
-                Properties.Settings.Default.Save();
-                Log($"✓ KCC set: {kccPath}");
-            }
-
-            string convertedFolder = Path.Combine(path, "Converted");
-            var cbzFiles = Directory.Exists(convertedFolder)
-                ? Directory.GetFiles(convertedFolder, "*.cbz").OrderBy(x => x).ToArray()
-                : Array.Empty<string>();
-
-            if (cbzFiles.Length == 0)
-            {
-                Log("No CBZ files found in /Converted. Run Convert to CBZ first.");
+                Log("⚠ kcc-c2e not found. Install with: pip install kcc");
+                MessageBox.Show(
+                    "kcc-c2e not found.\n\nInstall with:\n  pip install kcc\n\nMake sure Python Scripts folder is in PATH.",
+                    "KCC Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            // Roda KCC_c2e em modo headless: sem GUI, saída direto em /Converted
-            var inputArgs = string.Join(" ", cbzFiles.Select(f => $"\"{f}\""));
-            var args = $"-o \"{convertedFolder}\" -f MOBI {inputArgs}";
+            var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
+            if (volumes.Length == 0)
+            {
+                Log("No volume folders found.");
+                return;
+            }
 
-            Log($"▶ KCC converting {cbzFiles.Length} CBZ(s) to MOBI...");
+            string profile = GetKccProfile();
+            string convertedFolder = Path.Combine(path, "Converted");
+            Directory.CreateDirectory(convertedFolder);
+
+            Log($"▶ KCC ({profile}) processing {volumes.Length} volume(s)...");
             var token = StartOperation();
 
             await Task.Run(() =>
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = kccPath,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
+                int total = volumes.Length;
+                int current = 0;
 
-                using var proc = Process.Start(psi);
-                if (proc == null)
+                foreach (var vol in volumes)
                 {
-                    Dispatcher.Invoke(() => Log("⚠ Failed to start KCC."));
-                    return;
+                    if (token.IsCancellationRequested) break;
+                    string volName = Path.GetFileName(vol);
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = kccExe,
+                        Arguments = $"-p {profile} -m -q -f MOBI -o \"{convertedFolder}\" \"{vol}\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    };
+
+                    using var proc = Process.Start(psi);
+                    if (proc == null)
+                    {
+                        Dispatcher.Invoke(() => Log($"⚠ Failed to start KCC for {volName}."));
+                        current++;
+                        continue;
+                    }
+
+                    proc.OutputDataReceived += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"  {ev.Data}")); };
+                    proc.ErrorDataReceived  += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"  {ev.Data}")); };
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
+                    proc.WaitForExit();
+
+                    current++;
+                    int exitCode = proc.ExitCode;
+                    Dispatcher.Invoke(() =>
+                    {
+                        ProgressBar.Value = (double)current / total * 100;
+                        ProgressText.Text = $"{current} / {total}";
+                        if (exitCode == 0)
+                            Log($"✓ {volName}");
+                        else
+                            Log($"⚠ {volName} — exit code {exitCode}");
+                    });
                 }
-
-                proc.OutputDataReceived += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"KCC: {ev.Data}")); };
-                proc.ErrorDataReceived  += (_, ev) => { if (!string.IsNullOrEmpty(ev.Data)) Dispatcher.Invoke(() => Log($"KCC: {ev.Data}")); };
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                proc.WaitForExit();
 
                 Dispatcher.Invoke(() =>
                 {
-                    if (proc.ExitCode == 0)
-                        Log("✓ KCC conversion complete. MOBI(s) saved to /Converted.");
-                    else
-                        Log($"⚠ KCC finished with exit code {proc.ExitCode}. Check output above.");
-
+                    Log($"Done. {current} volume(s) processed → /Converted");
                     EndOperation();
                     RefreshSelectedStatus();
                 });
@@ -400,11 +461,11 @@ namespace MangaManager
 
             bool hasMobi = HasConvertedFiles(Path.Combine(fullPath, "Converted"));
 
-            // S6 — Resize: verifica se há imagens redimensionadas (proxy: imagens existem e são menores que 1500px largura)
-            bool s6 = s3; // simplificado: consideramos feito se há imagens extraídas
+            // S6 — KCC: pasta Converted com .mobi gerado pelo KCC
+            bool s6 = hasMobi;
 
-            // S7 — Convert: pasta Converted com EPUB ou MOBI
-            bool s7 = HasConvertedFiles(Path.Combine(fullPath, "Converted"));
+            // S7 — não usado
+            bool s7 = false;
 
             // Verifica se já está no Kindle (usa path passado para evitar múltiplas detecções)
             bool onKindle = false;
@@ -465,17 +526,12 @@ namespace MangaManager
         }
 
         private static bool HasConvertedFiles(string convertedFolder) =>
-            Directory.Exists(convertedFolder) && (
-                Directory.GetFiles(convertedFolder, "*.cbz").Length > 0 ||
-                Directory.GetFiles(convertedFolder, "*.mobi").Length > 0 ||
-                Directory.GetFiles(convertedFolder, "*.azw3").Length > 0);
+            Directory.Exists(convertedFolder) &&
+            Directory.GetFiles(convertedFolder, "*.mobi").Length > 0;
 
         private static string[] GetConvertedFiles(string convertedFolder) =>
             Directory.Exists(convertedFolder)
-                ? Directory.GetFiles(convertedFolder, "*.cbz")
-                    .Concat(Directory.GetFiles(convertedFolder, "*.mobi"))
-                    .Concat(Directory.GetFiles(convertedFolder, "*.azw3"))
-                    .OrderBy(x => x).ToArray()
+                ? Directory.GetFiles(convertedFolder, "*.mobi").OrderBy(x => x).ToArray()
                 : Array.Empty<string>();
 
         private async Task LoadCoverAsync(MangaItem item, string mangaPath)
@@ -1718,18 +1774,13 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnCleanup.IsEnabled = hasComicInfo;
             SetCheck(BtnCleanup, cleaned);
 
-            bool hasConverted = HasConvertedFiles(Path.Combine(mangaPath, "Converted"));
-
-            BtnConvert.IsEnabled = cleaned;
-            SetCheck(BtnConvert, hasConverted);
-
+            // BtnResize = "Process & Convert (KCC)": habilita após cleanup
+            BtnResize.IsEnabled = cleaned;
             string convertedDir = Path.Combine(mangaPath, "Converted");
-            bool hasCbzInConverted = Directory.Exists(convertedDir) &&
-                                     Directory.GetFiles(convertedDir, "*.cbz").Length > 0;
-            BtnOpenKCC.IsEnabled = hasCbzInConverted;
-
             bool hasMobiInConverted = Directory.Exists(convertedDir) &&
                                       Directory.GetFiles(convertedDir, "*.mobi").Length > 0;
+            SetCheck(BtnResize, hasMobiInConverted);
+
             BtnSendToKindle.IsEnabled = hasMobiInConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
@@ -1806,371 +1857,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
             BtnResize.IsEnabled = false;
-            BtnConvert.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
-            BtnOpenKCC.IsEnabled = false;
             BtnSendToKindle.IsEnabled = false;
             BtnRemoveFromKindle.IsEnabled = false;
         }
 
-        // ==============================
-        // 📱 DEVICE COMBO
-        // ==============================
-        private record DeviceProfile(string Name, int Width, int Height);
-
-        private void InitializeDeviceCombo()
-        {
-            var devices = new List<DeviceProfile>
-            {
-                new("Kindle Paperwhite 1/2/3 (758×1024)",     758,  1024),
-                new("Kindle Paperwhite 4/5 (1072×1448)",     1072,  1448),
-                new("Kindle Paperwhite 11th Gen (1236×1648)", 1236, 1648),
-                new("Kindle Oasis (1264×1680)",               1264,  1680),
-                new("Kindle Scribe (1860×2480)",              1860,  2480),
-                new("Kindle Basic 2022 (1072×1448)",          1072,  1448),
-            };
-
-            DeviceCombo.ItemsSource = devices;
-            DeviceCombo.DisplayMemberPath = "Name";
-
-            // Carrega perfil salvo anteriormente
-            var savedDevice = Properties.Settings.Default.KindleDevice;
-            var match = devices.FirstOrDefault(d => d.Name == savedDevice);
-            DeviceCombo.SelectedItem = match ?? devices[0];
-
-            // Salva ao mudar
-            DeviceCombo.SelectionChanged += (s, e) =>
-            {
-                if (DeviceCombo.SelectedItem is DeviceProfile selected)
-                {
-                    Properties.Settings.Default.KindleDevice = selected.Name;
-                    Properties.Settings.Default.Save();
-                }
-            };
-        }
-
-        // ==============================
-        // 🖼 RESIZE IMAGES
-        // ==============================
-        private async void Resize_Click(object sender, RoutedEventArgs e)
-        {
-            var path = GetSelectedPath();
-            if (path == null) return;
-
-            if (DeviceCombo.SelectedItem is not DeviceProfile device)
-            {
-                Log("Please select a device.");
-                return;
-            }
-
-            var images = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
-                .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-
-            if (images.Length == 0)
-            {
-                Log("No images found. Please extract first.");
-                return;
-            }
-
-            Log($"Resizing {images.Length} image(s) to {device.Width}×{device.Height} ({device.Name})...");
-            var token = StartOperation();
-
-            await Task.Run(() =>
-            {
-                int total = images.Length;
-                int current = 0;
-
-                foreach (var img in images)
-                {
-                    if (token.IsCancellationRequested) break;
-                    try
-                    {
-                        using var original = System.Drawing.Image.FromFile(img);
-
-                        // Detecta e remove bordas
-                        using var cropped = CropBorders((System.Drawing.Bitmap)original);
-
-                        // Calcula proporção mantendo aspect ratio
-                        float ratioW = (float)device.Width / cropped.Width;
-                        float ratioH = (float)device.Height / cropped.Height;
-                        float ratio = Math.Min(ratioW, ratioH);
-                        int newW = (int)(cropped.Width * ratio);
-                        int newH = (int)(cropped.Height * ratio);
-
-                        using var resized = new System.Drawing.Bitmap(newW, newH);
-                        using (var g = System.Drawing.Graphics.FromImage(resized))
-                        {
-                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                            g.DrawImage(cropped, 0, 0, newW, newH);
-                        }
-
-                        // Converte para escala de cinza com ajustes de gamma/contraste/nitidez
-                        using var processed = ProcessForEInk(resized);
-
-                        var format = img.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
-                            ? System.Drawing.Imaging.ImageFormat.Png
-                            : System.Drawing.Imaging.ImageFormat.Jpeg;
-
-                        processed.Save(img, format);
-                    }
-                    catch { /* ignora imagem com problema */ }
-
-                    current++;
-                    Dispatcher.Invoke(() =>
-                    {
-                        ProgressBar.Value = (double)current / total * 100;
-                        ProgressText.Text = $"{current} / {total}";
-                    });
-                }
-
-                Dispatcher.Invoke(() =>
-                {
-                    Log($"Resize complete. {total} image(s) resized for {device.Name}.");
-                    EndOperation();
-                    RefreshSelectedStatus();
-                });
-            });
-        }
-
-        private System.Drawing.Bitmap CropBorders(System.Drawing.Bitmap bmp, int threshold = 20)
-        {
-            int top = 0, bottom = bmp.Height - 1, left = 0, right = bmp.Width - 1;
-
-            bool IsBorderColor(System.Drawing.Color c) =>
-                (c.R < threshold && c.G < threshold && c.B < threshold) ||          // preto
-                (c.R > 255 - threshold && c.G > 255 - threshold && c.B > 255 - threshold); // branco
-
-            bool RowIsBorder(int y)
-            {
-                for (int x = 0; x < bmp.Width; x++)
-                    if (!IsBorderColor(bmp.GetPixel(x, y))) return false;
-                return true;
-            }
-
-            bool ColIsBorder(int x)
-            {
-                for (int y = 0; y < bmp.Height; y++)
-                    if (!IsBorderColor(bmp.GetPixel(x, y))) return false;
-                return true;
-            }
-
-            while (top < bottom && RowIsBorder(top)) top++;
-            while (bottom > top && RowIsBorder(bottom)) bottom--;
-            while (left < right && ColIsBorder(left)) left++;
-            while (right > left && ColIsBorder(right)) right--;
-
-            var rect = new System.Drawing.Rectangle(left, top, right - left + 1, bottom - top + 1);
-
-            // Se a imagem toda for borda, retorna original
-            if (rect.Width <= 0 || rect.Height <= 0) return bmp;
-
-            return bmp.Clone(rect, bmp.PixelFormat);
-        }
-
-        // ==============================
-        // Processa imagem para tela E-Ink: grayscale + gamma + contraste + nitidez
-        private System.Drawing.Bitmap ProcessForEInk(System.Drawing.Bitmap src)
-        {
-            var result = new System.Drawing.Bitmap(src.Width, src.Height,
-                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
-            // ColorMatrix para escala de cinza com ajuste de contraste (similar ao KCC)
-            var cm = new System.Drawing.Imaging.ColorMatrix(new float[][]
-            {
-                new float[] { 0.299f, 0.299f, 0.299f, 0, 0 },
-                new float[] { 0.587f, 0.587f, 0.587f, 0, 0 },
-                new float[] { 0.114f, 0.114f, 0.114f, 0, 0 },
-                new float[] { 0,      0,      0,      1, 0 },
-                new float[] { 0,      0,      0,      0, 1 }
-            });
-
-            var attrs = new System.Drawing.Imaging.ImageAttributes();
-            attrs.SetColorMatrix(cm);
-
-            using (var g = System.Drawing.Graphics.FromImage(result))
-            {
-                g.DrawImage(src,
-                    new System.Drawing.Rectangle(0, 0, src.Width, src.Height),
-                    0, 0, src.Width, src.Height,
-                    System.Drawing.GraphicsUnit.Pixel, attrs);
-            }
-
-            // Aplica gamma (1.5 = mais brilhante para telas E-Ink)
-            ApplyGamma(result, 1.5f);
-
-            // Aplica nitidez (unsharp mask leve)
-            return ApplySharpen(result);
-        }
-
-        private void ApplyGamma(System.Drawing.Bitmap bmp, float gamma)
-        {
-            byte[] table = new byte[256];
-            for (int i = 0; i < 256; i++)
-                table[i] = (byte)Math.Min(255, (int)(255.0 * Math.Pow(i / 255.0, 1.0 / gamma)));
-
-            var data = bmp.LockBits(
-                new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height),
-                System.Drawing.Imaging.ImageLockMode.ReadWrite,
-                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
-            unsafe
-            {
-                byte* ptr = (byte*)data.Scan0;
-                int bytes = Math.Abs(data.Stride) * bmp.Height;
-                for (int i = 0; i < bytes; i += 4)
-                {
-                    ptr[i] = table[ptr[i]];     // B
-                    ptr[i + 1] = table[ptr[i + 1]]; // G
-                    ptr[i + 2] = table[ptr[i + 2]]; // R
-                }
-            }
-
-            bmp.UnlockBits(data);
-        }
-
-        private System.Drawing.Bitmap ApplySharpen(System.Drawing.Bitmap src)
-        {
-            // Kernel de nitidez leve
-            float[,] kernel = {
-                {  0, -1,  0 },
-                { -1,  5, -1 },
-                {  0, -1,  0 }
-            };
-
-            var result = new System.Drawing.Bitmap(src.Width, src.Height);
-
-            for (int y = 1; y < src.Height - 1; y++)
-            {
-                for (int x = 1; x < src.Width - 1; x++)
-                {
-                    float r = 0, g = 0, b = 0;
-                    for (int ky = -1; ky <= 1; ky++)
-                    {
-                        for (int kx = -1; kx <= 1; kx++)
-                        {
-                            var px = src.GetPixel(x + kx, y + ky);
-                            float k = kernel[ky + 1, kx + 1];
-                            r += px.R * k;
-                            g += px.G * k;
-                            b += px.B * k;
-                        }
-                    }
-                    result.SetPixel(x, y, System.Drawing.Color.FromArgb(
-                        Clamp(r), Clamp(g), Clamp(b)));
-                }
-            }
-            return result;
-        }
-
-        private static int Clamp(float v) => Math.Max(0, Math.Min(255, (int)v));
-
-        // ==============================
-        // 📗 CONVERT TO EPUB
-        // ==============================
-        private async void Convert_Click(object sender, RoutedEventArgs e)
-        {
-            var path = GetSelectedPath();
-            if (path == null) return;
-
-            string mangaName = (MangaList.SelectedItem as MangaItem)!.Name;
-            string convertedFolder = Path.Combine(path, "Converted");
-            Directory.CreateDirectory(convertedFolder);
-
-            var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
-
-            if (volumes.Length == 0)
-            {
-                Log("No volume folders found.");
-                return;
-            }
-
-            Log($"Packing {volumes.Length} volume(s) to CBZ...");
-            var token = StartOperation();
-            string convertedFolderCapture = convertedFolder;
-
-            if (_watcher != null) _watcher.EnableRaisingEvents = false;
-
-            await Task.Run(() =>
-            {
-                int total = volumes.Length;
-                int current = 0;
-
-                foreach (var vol in volumes)
-                {
-                    if (token.IsCancellationRequested) break;
-                    string volName = Path.GetFileName(vol);
-                    string cbzPath = Path.Combine(convertedFolderCapture, $"{volName}.cbz");
-
-                    try
-                    {
-                        if (File.Exists(cbzPath)) File.Delete(cbzPath);
-
-                        var imgFiles = Directory.GetFiles(vol, "*.*", SearchOption.AllDirectories)
-                            .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                                        f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                                        f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-                                        f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
-                            .OrderBy(f => f)
-                            .ToList();
-
-                        if (imgFiles.Count == 0)
-                        {
-                            Dispatcher.Invoke(() => Log($"⚠ No images in {volName}, skipping."));
-                            current++;
-                            continue;
-                        }
-
-                        // CBZ = ZIP com imagens nomeadas sequencialmente
-                        using (var zip = ZipFile.Open(cbzPath, ZipArchiveMode.Create))
-                        {
-                            int idx = 1;
-                            foreach (var imgFile in imgFiles)
-                            {
-                                string ext = Path.GetExtension(imgFile).ToLowerInvariant();
-                                string entryName = $"{idx:D4}{ext}";
-                                var entry = zip.CreateEntry(entryName, CompressionLevel.NoCompression);
-                                using var dst = entry.Open();
-                                using var src = File.OpenRead(imgFile);
-                                src.CopyTo(dst);
-                                idx++;
-                            }
-                        }
-
-                        current++;
-                        long fileSize = new FileInfo(cbzPath).Length;
-                        Dispatcher.Invoke(() =>
-                        {
-                            ProgressBar.Value = (double)current / total * 100;
-                            ProgressText.Text = $"{current} / {total}";
-                            Log($"✓ {volName}.cbz ({fileSize / 1024} KB, {imgFiles.Count} pages)");
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        Dispatcher.Invoke(() => Log($"⚠ Error converting {volName}: {ex.Message}"));
-                        current++;
-                    }
-                }
-
-                Dispatcher.Invoke(() =>
-                {
-                    if (_watcher != null) _watcher.EnableRaisingEvents = true;
-                    Log($"Done. {current} CBZ(s) saved to /Converted.");
-                    EndOperation();
-                    RefreshSelectedStatus();
-
-                    // Abre KCC automaticamente se estiver configurado
-                    if (!string.IsNullOrEmpty(kccPath) && File.Exists(kccPath))
-                        OpenInKCC_Click(this, new RoutedEventArgs());
-                    else
-                        Log("ℹ Click 'Open in KCC' to convert the CBZ(s) to MOBI.");
-                });
-            });
-        }
 
         private void ChkSendAll_Checked(object sender, RoutedEventArgs e)
         {
