@@ -259,12 +259,13 @@
                     </Button.Template>
                 </Button>
 
-                <!-- KCC: seletor de perfil + Process & Convert -->
+                <!-- KCC: seletor de perfil + Process & Convert + Open KCC -->
                 <Grid Height="32" Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="32"/>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="90"/>
                     </Grid.ColumnDefinitions>
                     <Rectangle Grid.Column="0" Fill="#A855F7"/>
                     <ComboBox x:Name="KccProfileCombo" Grid.Column="1"
@@ -279,6 +280,20 @@
                                 <ControlTemplate.Triggers>
                                     <Trigger Property="IsPressed" Value="True">
                                         <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <Button x:Name="BtnOpenKCC" Grid.Column="3" Click="OpenKCC_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#C0392B" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
+                                    <TextBlock Text="🔁 Open KCC" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#922B21"/>
                                     </Trigger>
                                 </ControlTemplate.Triggers>
                             </ControlTemplate>

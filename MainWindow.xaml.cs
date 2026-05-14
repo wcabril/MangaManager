@@ -271,6 +271,30 @@ namespace MangaManager
             });
         }
 
+        private void OpenKCC_Click(object sender, RoutedEventArgs e)
+        {
+            string? kccExe = FindKccCli();
+            if (kccExe == null)
+            {
+                var dialog = new WinForms.OpenFileDialog
+                {
+                    Title = "Locate KCC executable",
+                    Filter = "KCC|KCC*.exe|All executables|*.exe",
+                };
+                if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
+                {
+                    Log("⚠ KCC not selected.");
+                    return;
+                }
+                kccExe = dialog.FileName;
+                Properties.Settings.Default.KccPath = kccExe;
+                Properties.Settings.Default.Save();
+            }
+
+            Process.Start(new ProcessStartInfo { FileName = kccExe, UseShellExecute = true });
+            Log($"▶ KCC opened: {Path.GetFileName(kccExe)}");
+        }
+
         // ==============================
         // 📂 SELECT FOLDER
         // ==============================
