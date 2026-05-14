@@ -213,33 +213,6 @@
                     </Button.Template>
                 </Button>
 
-                <!-- KCC: seletor de perfil + Process & Convert -->
-                <Grid Height="32" Margin="0,4,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="32"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="160"/>
-                    </Grid.ColumnDefinitions>
-                    <Rectangle Grid.Column="0" Fill="#A855F7"/>
-                    <ComboBox x:Name="KccProfileCombo" Grid.Column="1"
-                              Background="#DDDDDD" BorderThickness="0"
-                              VerticalContentAlignment="Center" Padding="6,0"/>
-                    <Button x:Name="BtnResize" Grid.Column="2" Click="KCC_Click">
-                        <Button.Template>
-                            <ControlTemplate TargetType="Button">
-                                <Border x:Name="Bd" Background="#DDDDDD" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
-                                    <TextBlock Text="⚙  Process &amp; Convert" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
-                                </Border>
-                                <ControlTemplate.Triggers>
-                                    <Trigger Property="IsPressed" Value="True">
-                                        <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
-                                    </Trigger>
-                                </ControlTemplate.Triggers>
-                            </ControlTemplate>
-                        </Button.Template>
-                    </Button>
-                </Grid>
-
                 <!-- GENERATE COMICINFO -->
                 <Button x:Name="BtnComicInfo" Click="ComicInfo_Click" Height="32" Margin="0,4,0,0">
                     <Button.Template>
@@ -285,6 +258,33 @@
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
+
+                <!-- KCC: seletor de perfil + Process & Convert -->
+                <Grid Height="32" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="32"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="160"/>
+                    </Grid.ColumnDefinitions>
+                    <Rectangle Grid.Column="0" Fill="#A855F7"/>
+                    <ComboBox x:Name="KccProfileCombo" Grid.Column="1"
+                              Background="#DDDDDD" BorderThickness="0"
+                              VerticalContentAlignment="Center" Padding="6,0"/>
+                    <Button x:Name="BtnResize" Grid.Column="2" Click="KCC_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#DDDDDD" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
+                                    <TextBlock Text="⚙  Process &amp; Convert" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
 
                 <!-- VOLUME SELECTOR -->
                 <StackPanel Margin="0,8,0,0">
