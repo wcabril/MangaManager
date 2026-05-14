@@ -138,6 +138,7 @@ namespace MangaManager
             _                                      => "KPW5",
         };
 
+        // kcc-c2e.exe instalado via pip — usado para conversão headless
         private string? FindKccCli()
         {
             // 1. Caminho salvo nas settings
@@ -145,20 +146,41 @@ namespace MangaManager
             if (!string.IsNullOrEmpty(saved) && File.Exists(saved))
                 return saved;
 
-            // 2. Locais comuns de instalação do KCC standalone
-            string[] searchRoots = {
-                @"C:\Program Files\KCC",
-                @"C:\Program Files (x86)\KCC",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "KCC"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KCC"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "KCC"),
-            };
-
-            foreach (var root in searchRoots.Where(Directory.Exists))
+            // 2. via PATH (where kcc-c2e)
+            foreach (var cmd in new[] { "kcc-c2e", "kcc-c2e.exe" })
             {
-                // Procura KCC.exe ou KCC_*.exe (ex: KCC_10.1.3.exe)
-                var exe = Directory.GetFiles(root, "KCC*.exe", SearchOption.AllDirectories)
-                                   .OrderByDescending(f => f) // versão mais recente primeiro
+                try
+                {
+                    using var which = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "where",
+                        Arguments = cmd,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                    });
+                    var output = which?.StandardOutput.ReadToEnd() ?? "";
+                    which?.WaitForExit();
+                    var first = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                                      .FirstOrDefault()?.Trim();
+                    if (!string.IsNullOrEmpty(first) && File.Exists(first))
+                    {
+                        Properties.Settings.Default.KccPath = first;
+                        Properties.Settings.Default.Save();
+                        return first;
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Locais comuns de instalação pip (AppData\Local\Programs\Python\...\Scripts)
+            string pyLocal = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "AppData", "Local", "Programs", "Python");
+
+            if (Directory.Exists(pyLocal))
+            {
+                var exe = Directory.GetFiles(pyLocal, "kcc-c2e.exe", SearchOption.AllDirectories)
                                    .FirstOrDefault();
                 if (exe != null)
                 {
@@ -166,6 +188,44 @@ namespace MangaManager
                     Properties.Settings.Default.Save();
                     return exe;
                 }
+            }
+
+            // 4. pip --user (AppData\Roaming\Python\...\Scripts)
+            string pyRoaming = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Python");
+
+            if (Directory.Exists(pyRoaming))
+            {
+                var exe = Directory.GetFiles(pyRoaming, "kcc-c2e.exe", SearchOption.AllDirectories)
+                                   .FirstOrDefault();
+                if (exe != null)
+                {
+                    Properties.Settings.Default.KccPath = exe;
+                    Properties.Settings.Default.Save();
+                    return exe;
+                }
+            }
+
+            return null;
+        }
+
+        // KCC_*.exe standalone — usado para abrir a GUI
+        private string? FindKccGui()
+        {
+            string[] searchRoots = {
+                @"C:\Program Files\KCC",
+                @"C:\Program Files (x86)\KCC",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "KCC"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KCC"),
+            };
+
+            foreach (var root in searchRoots.Where(Directory.Exists))
+            {
+                var exe = Directory.GetFiles(root, "KCC*.exe", SearchOption.AllDirectories)
+                                   .OrderByDescending(f => f)
+                                   .FirstOrDefault();
+                if (exe != null) return exe;
             }
 
             return null;
@@ -273,12 +333,12 @@ namespace MangaManager
 
         private void OpenKCC_Click(object sender, RoutedEventArgs e)
         {
-            string? kccExe = FindKccCli();
+            string? kccExe = FindKccGui();
             if (kccExe == null)
             {
                 var dialog = new WinForms.OpenFileDialog
                 {
-                    Title = "Locate KCC executable",
+                    Title = "Locate KCC GUI (KCC_*.exe)",
                     Filter = "KCC|KCC*.exe|All executables|*.exe",
                 };
                 if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
@@ -287,8 +347,6 @@ namespace MangaManager
                     return;
                 }
                 kccExe = dialog.FileName;
-                Properties.Settings.Default.KccPath = kccExe;
-                Properties.Settings.Default.Save();
             }
 
             // Passa -o com a pasta /Converted do mangá selecionado (se houver)
