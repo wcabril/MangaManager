@@ -138,7 +138,7 @@ namespace MangaManager
             _                                      => "KPW5",
         };
 
-        // kcc-c2e.exe instalado via pip — usado para conversão headless
+        // kcc_c2e_*.exe do GitHub releases — usado para conversão headless
         private string? FindKccCli()
         {
             // 1. Caminho salvo nas settings
@@ -146,64 +146,33 @@ namespace MangaManager
             if (!string.IsNullOrEmpty(saved) && File.Exists(saved))
                 return saved;
 
-            // 2. via PATH (where kcc-c2e)
-            foreach (var cmd in new[] { "kcc-c2e", "kcc-c2e.exe" })
+            // 2. Pastas comuns onde o usuário pode ter salvo o executável
+            string[] searchRoots = {
+                @"D:\Mangas",
+                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
+                @"C:\Program Files\KCC",
+                @"C:\Program Files (x86)\KCC",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "KCC"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KCC"),
+            };
+
+            // Procura kcc_c2e_*.exe (GitHub releases) e kcc-c2e.exe (pip legado)
+            string[] patterns = { "kcc_c2e_*.exe", "kcc-c2e.exe", "kcc-c2e" };
+
+            foreach (var root in searchRoots.Where(Directory.Exists))
             {
-                try
+                foreach (var pattern in patterns)
                 {
-                    using var which = Process.Start(new ProcessStartInfo
+                    var exe = Directory.GetFiles(root, pattern, SearchOption.TopDirectoryOnly)
+                                       .OrderByDescending(f => f)
+                                       .FirstOrDefault();
+                    if (exe != null)
                     {
-                        FileName = "where",
-                        Arguments = cmd,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                    });
-                    var output = which?.StandardOutput.ReadToEnd() ?? "";
-                    which?.WaitForExit();
-                    var first = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                      .FirstOrDefault()?.Trim();
-                    if (!string.IsNullOrEmpty(first) && File.Exists(first))
-                    {
-                        Properties.Settings.Default.KccPath = first;
+                        Properties.Settings.Default.KccPath = exe;
                         Properties.Settings.Default.Save();
-                        return first;
+                        return exe;
                     }
-                }
-                catch { }
-            }
-
-            // 3. Locais comuns de instalação pip (AppData\Local\Programs\Python\...\Scripts)
-            string pyLocal = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "AppData", "Local", "Programs", "Python");
-
-            if (Directory.Exists(pyLocal))
-            {
-                var exe = Directory.GetFiles(pyLocal, "kcc-c2e.exe", SearchOption.AllDirectories)
-                                   .FirstOrDefault();
-                if (exe != null)
-                {
-                    Properties.Settings.Default.KccPath = exe;
-                    Properties.Settings.Default.Save();
-                    return exe;
-                }
-            }
-
-            // 4. pip --user (AppData\Roaming\Python\...\Scripts)
-            string pyRoaming = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Python");
-
-            if (Directory.Exists(pyRoaming))
-            {
-                var exe = Directory.GetFiles(pyRoaming, "kcc-c2e.exe", SearchOption.AllDirectories)
-                                   .FirstOrDefault();
-                if (exe != null)
-                {
-                    Properties.Settings.Default.KccPath = exe;
-                    Properties.Settings.Default.Save();
-                    return exe;
                 }
             }
 
@@ -239,20 +208,33 @@ namespace MangaManager
             string? kccExe = FindKccCli();
             if (kccExe == null)
             {
-                Log("⚠ KCC not found. Locate KCC.exe manually.");
+                Log("⚠ kcc_c2e not found.");
+                var result = MessageBox.Show(
+                    "kcc_c2e not found.\n\n" +
+                    "You need the CLI tool (not the GUI).\n\n" +
+                    "Download kcc_c2e_10.1.3.exe from:\n" +
+                    "https://github.com/ciromattia/kcc/releases\n\n" +
+                    "Click OK to locate the file manually.",
+                    "kcc_c2e Not Found",
+                    MessageBoxButton.OKCancel,
+                    MessageBoxImage.Warning);
+
+                if (result != MessageBoxResult.OK) return;
+
                 var dialog = new WinForms.OpenFileDialog
                 {
-                    Title = "Locate KCC executable",
-                    Filter = "KCC|KCC*.exe|All executables|*.exe",
+                    Title = "Locate kcc_c2e_*.exe",
+                    Filter = "kcc_c2e|kcc_c2e*.exe;kcc-c2e.exe|All executables|*.exe",
                 };
                 if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
                 {
-                    Log("⚠ KCC not selected. Aborting.");
+                    Log("⚠ kcc_c2e not selected. Aborting.");
                     return;
                 }
                 kccExe = dialog.FileName;
                 Properties.Settings.Default.KccPath = kccExe;
                 Properties.Settings.Default.Save();
+                Log($"✓ kcc_c2e saved: {kccExe}");
             }
 
             Log($"✓ KCC: {kccExe}");
