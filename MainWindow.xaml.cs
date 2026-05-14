@@ -291,8 +291,27 @@ namespace MangaManager
                 Properties.Settings.Default.Save();
             }
 
-            Process.Start(new ProcessStartInfo { FileName = kccExe, UseShellExecute = true });
-            Log($"▶ KCC opened: {Path.GetFileName(kccExe)}");
+            // Passa -o com a pasta /Converted do mangá selecionado (se houver)
+            string args = "";
+            var mangaPath = GetSelectedPath();
+            if (mangaPath != null)
+            {
+                string convertedFolder = Path.Combine(mangaPath, "Converted");
+                Directory.CreateDirectory(convertedFolder);
+                args = $"-o \"{convertedFolder}\"";
+                Log($"▶ KCC opened — output set to: {convertedFolder}");
+            }
+            else
+            {
+                Log($"▶ KCC opened: {Path.GetFileName(kccExe)}");
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = kccExe,
+                Arguments = args,
+                UseShellExecute = true,
+            });
         }
 
         // ==============================
