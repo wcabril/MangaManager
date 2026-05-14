@@ -140,52 +140,32 @@ namespace MangaManager
 
         private string? FindKccCli()
         {
-            // 1. Tenta via PATH usando where.exe
-            foreach (var cmd in new[] { "kcc-c2e", "kcc-c2e.exe" })
+            // 1. Caminho salvo nas settings
+            var saved = Properties.Settings.Default.KccPath;
+            if (!string.IsNullOrEmpty(saved) && File.Exists(saved))
+                return saved;
+
+            // 2. Locais comuns de instalação do KCC standalone
+            string[] searchRoots = {
+                @"C:\Program Files\KCC",
+                @"C:\Program Files (x86)\KCC",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "KCC"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KCC"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "KCC"),
+            };
+
+            foreach (var root in searchRoots.Where(Directory.Exists))
             {
-                try
+                // Procura KCC.exe ou KCC_*.exe (ex: KCC_10.1.3.exe)
+                var exe = Directory.GetFiles(root, "KCC*.exe", SearchOption.AllDirectories)
+                                   .OrderByDescending(f => f) // versão mais recente primeiro
+                                   .FirstOrDefault();
+                if (exe != null)
                 {
-                    using var which = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "where",
-                        Arguments = cmd,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                    });
-                    var output = which?.StandardOutput.ReadToEnd() ?? "";
-                    which?.WaitForExit();
-                    // where retorna \r\n no Windows — limpa corretamente
-                    var first = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                      .FirstOrDefault()?.Trim();
-                    if (!string.IsNullOrEmpty(first) && File.Exists(first))
-                        return first;
+                    Properties.Settings.Default.KccPath = exe;
+                    Properties.Settings.Default.Save();
+                    return exe;
                 }
-                catch { }
-            }
-
-            // 2. Locais comuns de instalação via pip (Python no AppData\Local)
-            string pyLocal = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "AppData", "Local", "Programs", "Python");
-
-            if (Directory.Exists(pyLocal))
-            {
-                var exe = Directory.GetFiles(pyLocal, "kcc-c2e.exe", SearchOption.AllDirectories)
-                                   .FirstOrDefault();
-                if (exe != null) return exe;
-            }
-
-            // 3. pip --user instala em AppData\Roaming\Python\...\Scripts
-            string pyRoaming = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Python");
-
-            if (Directory.Exists(pyRoaming))
-            {
-                var exe = Directory.GetFiles(pyRoaming, "kcc-c2e.exe", SearchOption.AllDirectories)
-                                   .FirstOrDefault();
-                if (exe != null) return exe;
             }
 
             return null;
@@ -199,14 +179,23 @@ namespace MangaManager
             string? kccExe = FindKccCli();
             if (kccExe == null)
             {
-                Log("⚠ kcc-c2e not found. Install with: pip install kcc");
-                MessageBox.Show(
-                    "kcc-c2e not found.\n\nInstall with:\n  pip install kcc\n\nMake sure Python Scripts folder is in PATH.",
-                    "KCC Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                Log("⚠ KCC not found. Locate KCC.exe manually.");
+                var dialog = new WinForms.OpenFileDialog
+                {
+                    Title = "Locate KCC executable",
+                    Filter = "KCC|KCC*.exe|All executables|*.exe",
+                };
+                if (dialog.ShowDialog() != WinForms.DialogResult.OK || !File.Exists(dialog.FileName))
+                {
+                    Log("⚠ KCC not selected. Aborting.");
+                    return;
+                }
+                kccExe = dialog.FileName;
+                Properties.Settings.Default.KccPath = kccExe;
+                Properties.Settings.Default.Save();
             }
 
-            Log($"✓ kcc-c2e: {kccExe}");
+            Log($"✓ KCC: {kccExe}");
 
             var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
             if (volumes.Length == 0)
