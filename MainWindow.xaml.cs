@@ -243,6 +243,7 @@ namespace MangaManager
             }
 
             Log($"Resizing {images.Length} image(s) to {targetW}×{targetH} ({profile})...");
+            BtnOpenKCC.IsEnabled = false;
             var token = StartOperation();
 
             await Task.Run(() =>
@@ -291,6 +292,7 @@ namespace MangaManager
                 Dispatcher.Invoke(() =>
                 {
                     Log($"✓ Resize complete. {total} image(s) resized for {profile}.");
+                    BtnOpenKCC.IsEnabled = true;
                     EndOperation();
                     RefreshSelectedStatus();
                 });
@@ -300,16 +302,34 @@ namespace MangaManager
         // ==============================
         // 🖼 IMAGE PROCESSING
         // ==============================
-        private System.Drawing.Bitmap CropBorders(System.Drawing.Bitmap bmp, int threshold = 20)
+        // blackThreshold : pixel é "borda preta"  se R,G,B < blackThreshold
+        // whiteThreshold : pixel é "borda branca" se R,G,B > 255-whiteThreshold
+        //   → valor alto captura artefatos JPEG (~200,200,200) que ficam em margens "brancas"
+        // borderRatio    : % mínima de pixels de borda para a linha/coluna ser cortada
+        private System.Drawing.Bitmap CropBorders(System.Drawing.Bitmap bmp,
+            int blackThreshold = 20, int whiteThreshold = 45, float borderRatio = 0.95f)
         {
             int top = 0, bottom = bmp.Height - 1, left = 0, right = bmp.Width - 1;
 
-            bool IsBorder(System.Drawing.Color c) =>
-                (c.R < threshold && c.G < threshold && c.B < threshold) ||
-                (c.R > 255 - threshold && c.G > 255 - threshold && c.B > 255 - threshold);
+            bool IsBorderPixel(System.Drawing.Color c) =>
+                (c.R < blackThreshold  && c.G < blackThreshold  && c.B < blackThreshold) ||
+                (c.R > 255 - whiteThreshold && c.G > 255 - whiteThreshold && c.B > 255 - whiteThreshold);
 
-            bool RowIsBorder(int y) { for (int x = 0; x < bmp.Width;  x++) if (!IsBorder(bmp.GetPixel(x, y))) return false; return true; }
-            bool ColIsBorder(int x) { for (int y = 0; y < bmp.Height; y++) if (!IsBorder(bmp.GetPixel(x, y))) return false; return true; }
+            bool RowIsBorder(int y)
+            {
+                int count = 0;
+                for (int x = 0; x < bmp.Width; x++)
+                    if (IsBorderPixel(bmp.GetPixel(x, y))) count++;
+                return (float)count / bmp.Width >= borderRatio;
+            }
+
+            bool ColIsBorder(int x)
+            {
+                int count = 0;
+                for (int y = 0; y < bmp.Height; y++)
+                    if (IsBorderPixel(bmp.GetPixel(x, y))) count++;
+                return (float)count / bmp.Height >= borderRatio;
+            }
 
             while (top    < bottom && RowIsBorder(top))    top++;
             while (bottom > top    && RowIsBorder(bottom)) bottom--;
@@ -453,6 +473,10 @@ namespace MangaManager
 
             var token = StartOperation();
 
+            BtnOpenKCC.IsEnabled = false;
+            ProgressBar.IsIndeterminate = true;
+            ProgressText.Text = "Running...";
+
             await Task.Run(() =>
             {
                 var psi = new ProcessStartInfo
@@ -468,7 +492,13 @@ namespace MangaManager
                 using var proc = Process.Start(psi);
                 if (proc == null)
                 {
-                    Dispatcher.Invoke(() => Log("⚠ Failed to start kcc_c2e."));
+                    Dispatcher.Invoke(() =>
+                    {
+                        ProgressBar.IsIndeterminate = false;
+                        BtnOpenKCC.IsEnabled = true;
+                        Log("⚠ Failed to start kcc_c2e.");
+                        EndOperation();
+                    });
                     return;
                 }
 
@@ -477,14 +507,20 @@ namespace MangaManager
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
                 proc.WaitForExit();
-
                 int exitCode = proc.ExitCode;
+
                 Dispatcher.Invoke(() =>
                 {
+                    ProgressBar.IsIndeterminate = false;
+                    BtnOpenKCC.IsEnabled = true;
+                    ProgressBar.Value = 100;
+                    ProgressText.Text = exitCode == 0 ? "Concluído" : $"Erro ({exitCode})";
+
                     if (exitCode == 0)
                         Log("✓ KCC conversion complete. MOBI(s) saved to /Converted.");
                     else
                         Log($"⚠ kcc_c2e finished with exit code {exitCode}.");
+
                     EndOperation();
                     RefreshSelectedStatus();
                 });
@@ -1595,6 +1631,19 @@ namespace MangaManager
             {
                 string volNum = new string(Path.GetFileName(vol).Where(char.IsDigit).ToArray());
 
+                // ComicInfo na raiz do volume — KCC usa para os metadados do MOBI (título, autor)
+                File.WriteAllText(Path.Combine(vol, "ComicInfo.xml"),
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<ComicInfo>
+  <Title>{mangaName} - Volume {int.Parse(string.IsNullOrEmpty(volNum) ? "1" : volNum):D2}</Title>
+  <Series>{mangaName}</Series>
+  <Volume>{volNum}</Volume>
+  <Writer>{author}</Writer>
+  <Genre>Manga</Genre>
+  <LanguageISO>pt</LanguageISO>
+  <Format>Manga</Format>
+</ComicInfo>");
+
                 foreach (var ch in Directory.GetDirectories(vol))
                 {
                     string chNum = new string(Path.GetFileName(ch).Where(char.IsDigit).ToArray());
@@ -1616,7 +1665,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 }
             }
 
-            Log($"ComicInfo generated for {generated} chapter(s).");
+            Log($"ComicInfo generated for {generated} chapter(s) + {volumes.Length} volume root(s).");
             RefreshSelectedStatus();
         }
 
@@ -1999,6 +2048,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                                       Directory.GetFiles(convertedDir, "*.mobi").Length > 0;
             SetCheck(BtnResize, hasMobiInConverted);
 
+            BtnOpenKCC.IsEnabled = cleaned;
             BtnSendToKindle.IsEnabled = hasMobiInConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
@@ -2076,6 +2126,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnComicInfo.IsEnabled = false;
             BtnResize.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
+            BtnOpenKCC.IsEnabled = false;
             BtnSendToKindle.IsEnabled = false;
             BtnRemoveFromKindle.IsEnabled = false;
         }

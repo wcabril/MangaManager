@@ -68,12 +68,17 @@
         </Grid.RowDefinitions>
 
         <!-- PASTA BASE -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-            <TextBlock Text="Folder:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox x:Name="BasePathBox" Width="900" IsReadOnly="True" VerticalAlignment="Center"
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Folder:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBox x:Name="BasePathBox" Grid.Column="1" IsReadOnly="True" VerticalAlignment="Center"
                      Background="#2D2D2D" Foreground="White" BorderBrush="#555"/>
-            <Button Content="Select Folder" Click="SelectFolder_Click" Margin="8,0,0,0" Padding="10,4"/>
-        </StackPanel>
+            <Button Grid.Column="2" Content="Select Folder" Click="SelectFolder_Click" Margin="8,0,0,0" Padding="10,4"/>
+        </Grid>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
@@ -94,7 +99,8 @@
                              PreviewMouseWheel="MangaList_PreviewMouseWheel">
                         <ListBox.ItemsPanel>
                             <ItemsPanelTemplate>
-                                <WrapPanel Orientation="Horizontal" Width="740"/>
+                                <WrapPanel Orientation="Horizontal"
+                                       Width="{Binding ViewportWidth, ElementName=MangaScrollViewer}"/>
                             </ItemsPanelTemplate>
                         </ListBox.ItemsPanel>
                         <ListBox.ItemTemplate>
@@ -131,7 +137,12 @@
             </DockPanel>
 
             <!-- AÇÕES -->
-            <StackPanel Grid.Column="1" Margin="20,0,0,0">
+            <Grid Grid.Column="1" Margin="20,0,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0">
 
                 <!-- Author field -->
                 <Grid Height="32" Margin="0,4,0,0">
@@ -259,13 +270,13 @@
                     </Button.Template>
                 </Button>
 
-                <!-- KCC: seletor de perfil + Process & Convert + Open KCC -->
+                <!-- KCC: seletor de perfil + Process & Convert + Generate mobi -->
                 <Grid Height="32" Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="32"/>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="150"/>
-                        <ColumnDefinition Width="90"/>
+                        <ColumnDefinition Width="1.5*"/>
+                        <ColumnDefinition Width="1.5*"/>
                     </Grid.ColumnDefinitions>
                     <Rectangle Grid.Column="0" Fill="#A855F7"/>
                     <ComboBox x:Name="KccProfileCombo" Grid.Column="1"
@@ -289,7 +300,7 @@
                         <Button.Template>
                             <ControlTemplate TargetType="Button">
                                 <Border x:Name="Bd" Background="#C0392B" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
-                                    <TextBlock Text="📤 Send to KCC" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
+                                    <TextBlock Text="🔄 Generate mobi" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
                                 </Border>
                                 <ControlTemplate.Triggers>
                                     <Trigger Property="IsPressed" Value="True">
@@ -399,12 +410,14 @@
                 </Grid>
                 <TextBlock x:Name="ProgressText" Foreground="#AAAAAA" FontSize="12" Margin="0,2,0,0"/>
 
+                </StackPanel>
+
                 <!-- LOG -->
-                <TextBox x:Name="LogBox" Height="220" Margin="0,10,0,0"
+                <TextBox x:Name="LogBox" Grid.Row="1" Margin="0,10,0,0"
                          IsReadOnly="True" TextWrapping="Wrap"
                          Background="#2D2D2D" Foreground="#CCCCCC" BorderBrush="#555"
                          VerticalScrollBarVisibility="Auto"/>
-            </StackPanel>
+            </Grid>
         </Grid>
     </Grid>
 </Window>
