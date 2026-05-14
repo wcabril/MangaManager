@@ -190,6 +190,24 @@ bin\Release\net8.0-windows\win-x64\publish\MangaManager.exe
 
 ---
 
+## 🙏 Credits & Acknowledgements
+
+This project relies on the following excellent open-source tools:
+
+### [KCC — Kindle Comic Converter](https://github.com/ciromattia/kcc)
+> *"comic2ebook — Written by Ciro Mattia Gonano and Pawel Jastrzebski"*
+
+Manga Manager uses `kcc_c2e` headlessly to package processed manga images into `.mobi` files optimized for Kindle devices. KCC handles EPUB/MOBI generation, right-to-left manga formatting, and device profile targeting.
+
+- 🔗 GitHub: [github.com/ciromattia/kcc](https://github.com/ciromattia/kcc)
+- 👤 Authors: [Ciro Mattia Gonano](https://github.com/ciromattia) & [Pawel Jastrzebski](https://github.com/AcidWeb)
+- 📄 License: [ISC License](https://github.com/ciromattia/kcc/blob/master/LICENSE.txt)
+
+### [7-Zip](https://www.7-zip.org/)
+Used to extract CBZ files. Created by Igor Pavlov, released under LGPL.
+
+---
+
 ## 📄 License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
