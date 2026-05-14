@@ -140,7 +140,7 @@ namespace MangaManager
 
         private string? FindKccCli()
         {
-            // 1. Tenta via PATH (where kcc-c2e)
+            // 1. Tenta via PATH usando where.exe
             foreach (var cmd in new[] { "kcc-c2e", "kcc-c2e.exe" })
             {
                 try
@@ -153,34 +153,37 @@ namespace MangaManager
                         CreateNoWindow = true,
                         RedirectStandardOutput = true,
                     });
-                    var output = which?.StandardOutput.ReadToEnd().Trim();
+                    var output = which?.StandardOutput.ReadToEnd() ?? "";
                     which?.WaitForExit();
-                    if (!string.IsNullOrEmpty(output))
-                        return output.Split('\n')[0].Trim();
+                    // where retorna \r\n no Windows — limpa corretamente
+                    var first = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                                      .FirstOrDefault()?.Trim();
+                    if (!string.IsNullOrEmpty(first) && File.Exists(first))
+                        return first;
                 }
                 catch { }
             }
 
-            // 2. Locais comuns de instalação via pip
-            string pyBase = Path.Combine(
+            // 2. Locais comuns de instalação via pip (Python no AppData\Local)
+            string pyLocal = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "AppData", "Local", "Programs", "Python");
 
-            if (Directory.Exists(pyBase))
+            if (Directory.Exists(pyLocal))
             {
-                var exe = Directory.GetFiles(pyBase, "kcc-c2e.exe", SearchOption.AllDirectories)
+                var exe = Directory.GetFiles(pyLocal, "kcc-c2e.exe", SearchOption.AllDirectories)
                                    .FirstOrDefault();
                 if (exe != null) return exe;
             }
 
-            // 3. Python no AppData\Roaming (pip --user)
-            string roaming = Path.Combine(
+            // 3. pip --user instala em AppData\Roaming\Python\...\Scripts
+            string pyRoaming = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Python");
 
-            if (Directory.Exists(roaming))
+            if (Directory.Exists(pyRoaming))
             {
-                var exe = Directory.GetFiles(roaming, "kcc-c2e.exe", SearchOption.AllDirectories)
+                var exe = Directory.GetFiles(pyRoaming, "kcc-c2e.exe", SearchOption.AllDirectories)
                                    .FirstOrDefault();
                 if (exe != null) return exe;
             }
@@ -203,6 +206,8 @@ namespace MangaManager
                 return;
             }
 
+            Log($"✓ kcc-c2e: {kccExe}");
+
             var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
             if (volumes.Length == 0)
             {
@@ -214,7 +219,8 @@ namespace MangaManager
             string convertedFolder = Path.Combine(path, "Converted");
             Directory.CreateDirectory(convertedFolder);
 
-            Log($"▶ KCC ({profile}) processing {volumes.Length} volume(s)...");
+            Log($"▶ KCC ({profile}) — {volumes.Length} volume(s)");
+            Log($"  Output → {convertedFolder}");
             var token = StartOperation();
 
             await Task.Run(() =>
@@ -226,11 +232,14 @@ namespace MangaManager
                 {
                     if (token.IsCancellationRequested) break;
                     string volName = Path.GetFileName(vol);
+                    string args = $"-p {profile} -m -q -f MOBI -o \"{convertedFolder}\" \"{vol}\"";
+
+                    Dispatcher.Invoke(() => Log($"  CMD: kcc-c2e {args}"));
 
                     var psi = new ProcessStartInfo
                     {
                         FileName = kccExe,
-                        Arguments = $"-p {profile} -m -q -f MOBI -o \"{convertedFolder}\" \"{vol}\"",
+                        Arguments = args,
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         RedirectStandardOutput = true,
