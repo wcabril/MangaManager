@@ -32,6 +32,15 @@ namespace MangaManager
             ResetButtonStates();
             InitializeKccProfileCombo();
 
+            // Limpa KccPath salvo se não for o executável c2e (ex: apontava para KCC.exe antigo)
+            var savedKcc = Properties.Settings.Default.KccPath;
+            if (!string.IsNullOrEmpty(savedKcc) &&
+                Path.GetFileName(savedKcc).IndexOf("c2e", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                Properties.Settings.Default.KccPath = "";
+                Properties.Settings.Default.Save();
+            }
+
             // Registra o hook para detectar dispositivos USB
             SourceInitialized += (s, e) =>
             {
@@ -152,9 +161,10 @@ namespace MangaManager
         // kcc_c2e_*.exe do GitHub releases — usado para conversão headless
         private string? FindKccCli()
         {
-            // 1. Caminho salvo nas settings
+            // 1. Caminho salvo nas settings — só aceita se for realmente o c2e (não o GUI)
             var saved = Properties.Settings.Default.KccPath;
-            if (!string.IsNullOrEmpty(saved) && File.Exists(saved))
+            if (!string.IsNullOrEmpty(saved) && File.Exists(saved) &&
+                Path.GetFileName(saved).IndexOf("c2e", StringComparison.OrdinalIgnoreCase) >= 0)
                 return saved;
 
             // 2. Pastas comuns onde o usuário pode ter salvo o executável
