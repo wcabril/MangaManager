@@ -289,7 +289,7 @@
                         <Button.Template>
                             <ControlTemplate TargetType="Button">
                                 <Border x:Name="Bd" Background="#C0392B" BorderBrush="#AAAAAA" BorderThickness="1,0,0,0">
-                                    <TextBlock Text="🔁 Open KCC" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
+                                    <TextBlock Text="📤 Send to KCC" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
                                 </Border>
                                 <ControlTemplate.Triggers>
                                     <Trigger Property="IsPressed" Value="True">
