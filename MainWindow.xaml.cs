@@ -3,7 +3,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
+using System.Net.Mail;
+using System.Xml.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -57,6 +60,27 @@ namespace MangaManager
                 LoadMangas();
             }
 
+            // Carrega configurações de email
+            SenderEmailBox.Text     = Properties.Settings.Default.SenderEmail;
+            KindleEmailBox.Text     = Properties.Settings.Default.KindleEmail;
+            AppPasswordBox.Password = Properties.Settings.Default.SenderAppPassword;
+
+            // Habilita botão se os campos já estiverem preenchidos
+            EmailFields_Changed(this, null!);
+
+            // Salva ao sair de cada campo
+            SenderEmailBox.LostFocus += (s, e) => {
+                Properties.Settings.Default.SenderEmail = SenderEmailBox.Text.Trim();
+                Properties.Settings.Default.Save();
+            };
+            KindleEmailBox.LostFocus += (s, e) => {
+                Properties.Settings.Default.KindleEmail = KindleEmailBox.Text.Trim();
+                Properties.Settings.Default.Save();
+            };
+            AppPasswordBox.LostFocus += (s, e) => {
+                Properties.Settings.Default.SenderAppPassword = AppPasswordBox.Password;
+                Properties.Settings.Default.Save();
+            };
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1902,6 +1926,143 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             });
         }
 
+        // ==============================
+        // 📧 SEND BY EMAIL
+        // ==============================
+        private void EmailFields_Changed(object sender, System.Windows.RoutedEventArgs e)
+        {
+            if (BtnSendByEmail == null || SenderEmailBox == null ||
+                AppPasswordBox == null || KindleEmailBox == null) return;
+
+            BtnSendByEmail.IsEnabled =
+                !string.IsNullOrWhiteSpace(SenderEmailBox.Text) &&
+                !string.IsNullOrWhiteSpace(AppPasswordBox.Password) &&
+                !string.IsNullOrWhiteSpace(KindleEmailBox.Text);
+        }
+        private async void SendByEmail_Click(object sender, RoutedEventArgs e)
+        {
+            var path = GetSelectedPath();
+            if (path == null) return;
+
+            string senderEmail  = SenderEmailBox.Text.Trim();
+            string appPassword  = AppPasswordBox.Password;
+            string kindleEmail  = KindleEmailBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(senderEmail) || string.IsNullOrEmpty(appPassword) || string.IsNullOrEmpty(kindleEmail))
+            {
+                MessageBox.Show(
+                    "Please fill in all three email fields:\n• Your email\n• App password\n• Kindle email",
+                    "Missing Email Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Detecta provedor SMTP pelo domínio do remetente
+            string domain = senderEmail.Split('@').LastOrDefault()?.ToLower() ?? "";
+            var (smtpHost, smtpPort) = domain switch
+            {
+                "gmail.com"   => ("smtp.gmail.com",    587),
+                "icloud.com"  => ("smtp.mail.me.com",  587),
+                "me.com"      => ("smtp.mail.me.com",  587),
+                "mac.com"     => ("smtp.mail.me.com",  587),
+                _ => (null, 0)
+            };
+
+            if (smtpHost == null)
+            {
+                MessageBox.Show(
+                    $"Unsupported email provider: @{domain}\n\nCurrently supported: Gmail (@gmail.com) and iCloud (@icloud.com / @me.com / @mac.com)",
+                    "Unsupported Provider", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Busca MOBIs respeitando o Range selector
+            string convertedFolder = Path.Combine(path, "Converted");
+            var files = GetConvertedFiles(convertedFolder);
+
+            if (files.Length == 0)
+            {
+                Log("No .mobi files found in /Converted. Run Generate mobi first.");
+                return;
+            }
+
+            if (ChkSendRange.IsChecked == true)
+            {
+                var selected = ParseVolumeSelection(VolumeRangeBox.Text);
+                if (selected.Count == 0) { Log("Please enter a valid volume range."); return; }
+                files = files.Where(f =>
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        Path.GetFileNameWithoutExtension(f), @"Volume (\d+)");
+                    return m.Success && selected.Contains(int.Parse(m.Groups[1].Value));
+                }).ToArray();
+            }
+
+            if (files.Length == 0) { Log("No matching volumes for the selected range."); return; }
+
+            Log($"📧 Sending {files.Length} MOBI(s) via {smtpHost} → {kindleEmail}...");
+            BtnSendByEmail.IsEnabled = false;
+            var token = StartOperation();
+
+            await Task.Run(async () =>
+            {
+                int total   = files.Length;
+                int current = 0;
+                int failed  = 0;
+
+                using var client = new SmtpClient(smtpHost, smtpPort)
+                {
+                    EnableSsl   = true,
+                    Credentials = new NetworkCredential(senderEmail, appPassword),
+                    Timeout     = 120_000,
+                };
+
+                foreach (var file in files)
+                {
+                    if (token.IsCancellationRequested) break;
+                    string fileName = Path.GetFileName(file);
+
+                    try
+                    {
+                        using var message = new MailMessage(senderEmail, kindleEmail)
+                        {
+                            Subject = Path.GetFileNameWithoutExtension(file),
+                            Body    = "Sent via Manga Manager",
+                        };
+                        message.Attachments.Add(new Attachment(file));
+                        await client.SendMailAsync(message);
+
+                        current++;
+                        Dispatcher.Invoke(() =>
+                        {
+                            ProgressBar.Value = (double)current / total * 100;
+                            ProgressText.Text = $"{current} / {total}";
+                            Log($"  ✓ Sent: {fileName}");
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        current++;
+                        Dispatcher.Invoke(() => Log($"  ⚠ Failed: {fileName} — {ex.Message}"));
+                    }
+
+                    // Pequena pausa entre envios para não saturar o SMTP
+                    if (current < total)
+                        await Task.Delay(1500);
+                }
+
+                Dispatcher.Invoke(() =>
+                {
+                    int sent = current - failed;
+                    Log(failed == 0
+                        ? $"✓ All {sent} file(s) sent! They will appear in your Kindle app after Amazon processes them (usually a few minutes)."
+                        : $"⚠ {sent} sent, {failed} failed. Check your app password and approved sender list.");
+                    BtnSendByEmail.IsEnabled = true;
+                    EndOperation();
+                });
+            });
+        }
+
         private void TriggerKindleRescan(string kindleDocsPath)
         {
             try
@@ -2086,6 +2247,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             if (MangaList.SelectedItem is not MangaItem selected) return;
             string fullPath = Path.Combine(basePath, selected.Name);
+            UpdateDetailsPanel(fullPath);
             var updated = BuildMangaItem(selected.Name, fullPath, FindKindlePath());
 
             selected.StatusColor = updated.StatusColor;
@@ -2103,17 +2265,114 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             UpdateButtonStates(fullPath);
         }
 
+        // ==============================
+        // 📋 DETAILS PANEL
+        // ==============================
+        private void UpdateDetailsPanel(string mangaPath)
+        {
+            string mangaName = Path.GetFileName(mangaPath);
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
+
+            int totalChapters = volumes.Sum(v =>
+                Directory.GetDirectories(v, "Capitulo *").Length);
+
+            bool extracted = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    Directory.GetFiles(ch, "*.jpg").Length > 0 ||
+                    Directory.GetFiles(ch, "*.png").Length > 0 ||
+                    Directory.GetFiles(ch, "*.webp").Length > 0));
+
+            bool hasComicInfo = volumes.Any(v =>
+                Directory.GetDirectories(v, "Capitulo *").Any(ch =>
+                    File.Exists(Path.Combine(ch, "ComicInfo.xml"))));
+
+            bool cleaned = volumes.Length > 0 && !volumes.Any(v => HasMangaFiles(v));
+
+            bool hasMobi = HasConvertedFiles(Path.Combine(mangaPath, "Converted"));
+
+            string? kindlePath = FindKindlePath();
+            bool onKindle = kindlePath != null &&
+                Directory.Exists(Path.Combine(kindlePath, "Mangas", mangaName)) &&
+                Directory.GetFiles(Path.Combine(kindlePath, "Mangas", mangaName), "*.mobi").Length > 0;
+
+            string author = ReadAuthorFromComicInfo(mangaPath);
+
+            DetailMangaName.Text = mangaName;
+            DetailAuthor.Text    = string.IsNullOrEmpty(author) ? "—" : author;
+            DetailVolumes.Text   = volumes.Length > 0 ? volumes.Length.ToString() : "—";
+            DetailChapters.Text  = totalChapters > 0 ? totalChapters.ToString() : "—";
+
+            SetDetailYesNo(DetailExtracted,  extracted);
+            SetDetailYesNo(DetailComicInfo,  hasComicInfo);
+            SetDetailYesNo(DetailCleanup,    cleaned);
+            SetDetailYesNo(DetailMobi,       hasMobi);
+            SetDetailYesNo(DetailKindle,     onKindle);
+        }
+
+        private void ClearDetailsPanel()
+        {
+            DetailMangaName.Text  = "Select a manga";
+            DetailAuthor.Text     = "—";
+            DetailVolumes.Text    = "—";
+            DetailChapters.Text   = "—";
+            foreach (var tb in new[] { DetailExtracted, DetailComicInfo, DetailCleanup, DetailMobi, DetailKindle })
+            {
+                tb.Text = "—";
+                tb.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
+            }
+        }
+
+        private void SetDetailYesNo(System.Windows.Controls.TextBlock tb, bool value)
+        {
+            tb.Text = value ? "Yes" : "No";
+            tb.Foreground = new System.Windows.Media.SolidColorBrush(
+                value ? System.Windows.Media.Color.FromRgb(0x95, 0xb6, 0x34)
+                      : System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
+        }
+
+        private string ReadAuthorFromComicInfo(string mangaPath)
+        {
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
+            foreach (var vol in volumes)
+            {
+                // Volume root first (mais confiável)
+                var author = ParseWriterFromComicInfo(Path.Combine(vol, "ComicInfo.xml"));
+                if (!string.IsNullOrEmpty(author)) return author;
+
+                // Fallback: primeiro capítulo
+                foreach (var ch in Directory.GetDirectories(vol, "Capitulo *"))
+                {
+                    author = ParseWriterFromComicInfo(Path.Combine(ch, "ComicInfo.xml"));
+                    if (!string.IsNullOrEmpty(author)) return author;
+                }
+            }
+            return "";
+        }
+
+        private static string ParseWriterFromComicInfo(string xmlPath)
+        {
+            try
+            {
+                if (!File.Exists(xmlPath)) return "";
+                return XDocument.Load(xmlPath).Root?.Element("Writer")?.Value ?? "";
+            }
+            catch { return ""; }
+        }
+
         private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
             if (MangaList.SelectedItem is MangaItem selected)
             {
                 string fullPath = Path.Combine(basePath, selected.Name);
                 UpdateButtonStates(fullPath);
+                UpdateDetailsPanel(fullPath);
                 StartWatcher(fullPath);
             }
             else
             {
                 ResetButtonStates();
+                ClearDetailsPanel();
                 _watcher?.Dispose();
             }
         }

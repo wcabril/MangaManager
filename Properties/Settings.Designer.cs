@@ -58,5 +58,29 @@ namespace MangaManager.Properties {
                 this["KccPath"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string SenderEmail {
+            get { return ((string)(this["SenderEmail"])); }
+            set { this["SenderEmail"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string SenderAppPassword {
+            get { return ((string)(this["SenderAppPassword"])); }
+            set { this["SenderAppPassword"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string KindleEmail {
+            get { return ((string)(this["KindleEmail"])); }
+            set { this["KindleEmail"] = value; }
+        }
     }
 }
