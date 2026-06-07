@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.IO.Compression;
+using Microsoft.Data.Sqlite;
 using System.Linq;
 using System.Diagnostics;
 using System.Net;
@@ -23,6 +24,7 @@ namespace MangaManager
         string zipPath = @"C:\Program Files\7-Zip\7z.exe";
         CancellationTokenSource? _cts;
         FileSystemWatcher? _watcher;
+        string _currentMangaPath = string.Empty;
 
         // Constantes para detecção de USB
         private const int WM_DEVICECHANGE = 0x0219;
@@ -618,7 +620,7 @@ namespace MangaManager
             private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
                            _statusWeight = "Normal", _statusTip = "",
                            _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "",
-                           _chk6 = "", _chk7 = "", _chkKindle = "";
+                           _chk6 = "", _chk7 = "", _chkKindle = "", _readProgress = "";
             private System.Windows.Media.ImageSource? _coverImage;
 
             public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
@@ -634,7 +636,57 @@ namespace MangaManager
             public string Chk6 { get => _chk6; set { _chk6 = value; OnChanged(nameof(Chk6)); } }
             public string Chk7 { get => _chk7; set { _chk7 = value; OnChanged(nameof(Chk7)); } }
             public string ChkKindle { get => _chkKindle; set { _chkKindle = value; OnChanged(nameof(ChkKindle)); } }
+            // "3/5" = 3 volumes lidos de 5 no Kindle; "" quando não há dados
+            public string ReadProgress { get => _readProgress; set { _readProgress = value; OnChanged(nameof(ReadProgress)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
+        }
+
+        private enum ReadStatus { Unread, Reading, Read }
+
+        private class KindleVolumeRow : System.ComponentModel.INotifyPropertyChanged
+        {
+            public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+            private void OnChanged(string p) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(p));
+
+            public string VolumeName { get; set; } = "";
+
+            // -1 = desconhecido; 0-100 = percentual do Kindle
+            private int _percentage = -1;
+            public int Percentage
+            {
+                get => _percentage;
+                set { _percentage = value; OnChanged(nameof(PercentText)); OnChanged(nameof(StatusIcon)); OnChanged(nameof(StatusColor)); }
+            }
+
+            private ReadStatus _status = ReadStatus.Unread;
+            public ReadStatus Status
+            {
+                get => _status;
+                set { _status = value; OnChanged(nameof(StatusIcon)); OnChanged(nameof(StatusColor)); OnChanged(nameof(PercentText)); }
+            }
+
+            public string StatusIcon => "●";
+
+            public string StatusColor => Status switch
+            {
+                ReadStatus.Read    => "#95b634", // verde
+                ReadStatus.Reading => "#F4A300", // amarelo
+                _                  => "#00A8E1", // azul
+            };
+
+            // Mostra percentual do Kindle quando disponível
+            public string PercentText => Percentage >= 0 ? $" {Percentage}%" : "";
+
+            public void CycleStatus()
+            {
+                Percentage = -1; // reset percentual ao alternar manualmente
+                Status = Status switch
+                {
+                    ReadStatus.Unread  => ReadStatus.Reading,
+                    ReadStatus.Reading => ReadStatus.Read,
+                    _                  => ReadStatus.Unread,
+                };
+            }
         }
 
         private enum MangaStatus { None, Partial, Complete }
@@ -756,6 +808,20 @@ namespace MangaManager
                             Directory.GetFiles(kindleDest, "*.azw3").Length > 0);
             }
 
+            // Progresso de leitura a partir do JSON salvo
+            string readProgress = "";
+            if (onKindle || hasMobi)
+            {
+                int totalMobi = Directory.Exists(Path.Combine(fullPath, "Converted"))
+                    ? Directory.GetFiles(Path.Combine(fullPath, "Converted"), "*.mobi").Length : 0;
+                if (totalMobi > 0)
+                {
+                    var saved = LoadReadingProgress(fullPath);
+                    int readCount = saved.Values.Count(s => s == ReadStatus.Read);
+                    readProgress = readCount > 0 ? $"{readCount}/{totalMobi}" : "";
+                }
+            }
+
             return new MangaItem
             {
                 Name = name,
@@ -770,6 +836,7 @@ namespace MangaManager
                 Chk6 = s6 ? "✔" : "",
                 Chk7 = s7 ? "✔" : "",
                 ChkKindle = onKindle ? "📱" : "",
+                ReadProgress = readProgress,
             };
         }
 
@@ -2261,6 +2328,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             selected.Chk6 = updated.Chk6;
             selected.Chk7 = updated.Chk7;
             selected.ChkKindle = updated.ChkKindle;
+            selected.ReadProgress = updated.ReadProgress;
 
             UpdateButtonStates(fullPath);
         }
@@ -2268,6 +2336,268 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         // ==============================
         // 📋 DETAILS PANEL
         // ==============================
+
+        // Retorna um arquivo JSON de progresso para o mangá
+        private static string ProgressFilePath(string mangaPath) =>
+            Path.Combine(mangaPath, "reading_progress.json");
+
+        private static Dictionary<string, ReadStatus> LoadReadingProgress(string mangaPath)
+        {
+            try
+            {
+                string path = ProgressFilePath(mangaPath);
+                if (!File.Exists(path)) return new();
+                var raw = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path));
+                return raw?.ToDictionary(
+                    kv => kv.Key,
+                    kv => Enum.TryParse<ReadStatus>(kv.Value, out var s) ? s : ReadStatus.Unread)
+                    ?? new();
+            }
+            catch { return new(); }
+        }
+
+        private static void SaveReadingProgress(string mangaPath, IEnumerable<KindleVolumeRow> rows)
+        {
+            try
+            {
+                var dict = rows.ToDictionary(r => r.VolumeName, r => r.Status.ToString());
+                File.WriteAllText(ProgressFilePath(mangaPath),
+                    JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { }
+        }
+
+        // Lê o reader.db do Kindle e retorna percentual de leitura por nome de arquivo (0–100).
+        // Copia para temp antes de abrir para evitar conflito de lock.
+        // Detecta o schema automaticamente entre os formatos conhecidos dos firmwares Kindle.
+        private Dictionary<string, int> ReadKindleDb(string kindleRoot)
+        {
+            var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            string dbPath = Path.Combine(kindleRoot, "system", "reader.db");
+            Log($"📱 Procurando reader.db em: {dbPath}");
+            if (!File.Exists(dbPath))
+            {
+                // Tenta também dentro de subpastas comuns
+                var alt = Directory.GetFiles(kindleRoot, "reader.db", SearchOption.AllDirectories)
+                                   .FirstOrDefault();
+                if (alt != null)
+                {
+                    Log($"📱 reader.db encontrado em: {alt}");
+                    dbPath = alt;
+                }
+                else
+                {
+                    Log("📱 reader.db não encontrado. Kindle pode estar desconectado ou usar outro caminho.");
+                    return result;
+                }
+            }
+
+            string tmp = Path.Combine(Path.GetTempPath(), "mm_reader_tmp.db");
+            try
+            {
+                File.Copy(dbPath, tmp, overwrite: true);
+                using var conn = new SqliteConnection($"Data Source={tmp};Mode=ReadOnly;");
+                conn.Open();
+
+                // Descobre quais tabelas existem
+                var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read()) tables.Add(r.GetString(0));
+                }
+
+                Log($"📱 Kindle reader.db — tabelas: {string.Join(", ", tables)}");
+
+                // Tenta cada schema conhecido
+                TryReadSchema(conn, tables, result,
+                    table: "books",
+                    keyCol: "key", pctCol: "percentage_read", scale: 100.0);
+
+                TryReadSchema(conn, tables, result,
+                    table: "BOOK_INFO",
+                    keyCol: "CONTENT_PATH", pctCol: "PERCENTAGE_READ", scale: 100.0);
+
+                TryReadSchema(conn, tables, result,
+                    table: "BOOK_READING_STATE",
+                    keyCol: "CONTENT_PATH", pctCol: "PERCENTAGE_READ", scale: 100.0);
+
+                // Formato alternativo onde percentual é 0–1 (float)
+                if (result.Count == 0)
+                {
+                    TryReadSchema(conn, tables, result,
+                        table: "books",
+                        keyCol: "key", pctCol: "percentageRead", scale: 100.0);
+                }
+
+                Log($"📱 Kindle reader.db — {result.Count} livro(s) com progresso encontrado(s).");
+            }
+            catch (Exception ex)
+            {
+                Log($"📱 Kindle reader.db — erro: {ex.Message}");
+            }
+            finally
+            {
+                try { File.Delete(tmp); } catch { }
+            }
+            return result;
+        }
+
+        private static void TryReadSchema(SqliteConnection conn,
+            HashSet<string> tables, Dictionary<string, int> result,
+            string table, string keyCol, string pctCol, double scale)
+        {
+            if (!tables.Contains(table)) return;
+            try
+            {
+                // Verifica se as colunas existem
+                var cols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (var pragma = conn.CreateCommand())
+                {
+                    pragma.CommandText = $"PRAGMA table_info({table})";
+                    using var pr = pragma.ExecuteReader();
+                    while (pr.Read()) cols.Add(pr.GetString(1)); // coluna "name"
+                }
+                if (!cols.Contains(keyCol) || !cols.Contains(pctCol)) return;
+
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = $"SELECT {keyCol}, {pctCol} FROM {table} WHERE {pctCol} IS NOT NULL AND {pctCol} > 0";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string key = reader.GetString(0);
+                    double raw = reader.GetDouble(1);
+                    // Normaliza: se scale=100 e raw>1, é 0-100; se raw<=1, multiplica
+                    int pct = raw > 1.0 ? (int)Math.Round(raw) : (int)Math.Round(raw * scale);
+                    string fileName = Path.GetFileNameWithoutExtension(key);
+                    if (!string.IsNullOrEmpty(fileName))
+                        result.TryAdd(fileName, Math.Clamp(pct, 0, 100));
+                }
+            }
+            catch { }
+        }
+
+        private List<KindleVolumeRow> GetKindleVolumeStatuses(string mangaPath, string? kindlePath)
+        {
+            string mangaName = Path.GetFileName(mangaPath);
+            string convertedFolder = Path.Combine(mangaPath, "Converted");
+            if (!Directory.Exists(convertedFolder)) return new();
+
+            var mobiFiles = Directory.GetFiles(convertedFolder, "*.mobi")
+                .OrderBy(f => f).ToArray();
+            if (mobiFiles.Length == 0) return new();
+
+            var saved = LoadReadingProgress(mangaPath);
+
+            // Tenta ler o reader.db do Kindle para obter percentuais precisos
+            string? kindleRoot = kindlePath != null ? Path.GetDirectoryName(kindlePath) : null;
+            var kindleDb = kindleRoot != null ? ReadKindleDb(kindleRoot) : new();
+
+            string? kindleMangaFolder = kindlePath != null
+                ? Path.Combine(kindlePath, "Mangas", mangaName) : null;
+
+            var rows = new List<KindleVolumeRow>();
+            foreach (var mobi in mobiFiles)
+            {
+                string baseName = Path.GetFileNameWithoutExtension(mobi);
+                var m = System.Text.RegularExpressions.Regex.Match(baseName, @"[Vv]olume\s+(\d+)");
+                string shortName = m.Success ? $"Vol. {int.Parse(m.Groups[1].Value):D2}" : baseName;
+
+                ReadStatus status = ReadStatus.Unread;
+                int percentage = -1;
+                bool kindleDetected = false;
+
+                // 1. Kindle reader.db (mais preciso — só disponível em alguns firmwares)
+                if (kindleDb.TryGetValue(baseName, out int dbPct))
+                {
+                    percentage = dbPct;
+                    status = dbPct >= 90 ? ReadStatus.Read
+                           : dbPct > 0  ? ReadStatus.Reading
+                                        : ReadStatus.Unread;
+                    kindleDetected = true;
+                }
+                // 2. Arquivos .sdr no Kindle (funciona em todos os firmwares)
+                else if (kindleMangaFolder != null)
+                {
+                    string sdrPath    = Path.Combine(kindleMangaFolder, baseName + ".sdr");
+                    string kindleBook = Path.Combine(kindleMangaFolder, Path.GetFileName(mobi));
+                    if (Directory.Exists(sdrPath))
+                    {
+                        var (detectedStatus, detectedPct) = GetKindleReadProgress(sdrPath, kindleBook);
+                        status         = detectedStatus;
+                        percentage     = detectedPct;
+                        kindleDetected = true;
+                    }
+                }
+
+                // 3. Status salvo manualmente — aplica só quando Kindle não detectou nada,
+                //    ou quando usuário marcou explicitamente como ✅ Read (respeita conclusão manual)
+                if (saved.TryGetValue(shortName, out var savedStatus))
+                {
+                    if (!kindleDetected)
+                        status = savedStatus;
+                    else if (savedStatus == ReadStatus.Read && status != ReadStatus.Read)
+                        status = ReadStatus.Read; // usuário marcou como lido — mantém
+                }
+
+                rows.Add(new KindleVolumeRow { VolumeName = shortName, Status = status, Percentage = percentage });
+            }
+
+            return rows;
+        }
+
+        // Lê o progresso de leitura dos arquivos binários do .sdr (.azw3f, .azw3r, .han)
+        // mobiPath = caminho do MOBI no Kindle, usado para calcular % via tamanho do arquivo
+        private static (ReadStatus status, int percentage) GetKindleReadProgress(string sdrPath, string? mobiPath = null)
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(sdrPath))
+                {
+                    string ext = Path.GetExtension(file).ToLowerInvariant();
+                    var bytes = File.ReadAllBytes(file);
+                    var text = System.Text.Encoding.Latin1.GetString(bytes);
+
+                    if (ext == ".azw3f" || ext == ".azw3r")
+                    {
+                        // Formato binário Kindle: contém "fpr" seguido de bytes não-dígito e depois o número
+                        var m = System.Text.RegularExpressions.Regex.Match(text, @"fpr[^\d]{1,10}(\d+)");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out int fpr) && fpr > 0)
+                        {
+                            // Percentual aproximado: posição ÷ (tamanho_mobi / 167 bytes por location)
+                            if (mobiPath != null && File.Exists(mobiPath))
+                            {
+                                long mobiSize = new FileInfo(mobiPath).Length;
+                                long totalLocs = Math.Max(1, mobiSize / 167);
+                                int pct = (int)Math.Min(100, fpr * 100L / totalLocs);
+                                var st = pct >= 90 ? ReadStatus.Read : ReadStatus.Reading;
+                                return (st, pct);
+                            }
+                            return (ReadStatus.Reading, -1);
+                        }
+                    }
+                    else if (ext == ".han")
+                    {
+                        // Formato JSON (firmwares mais antigos)
+                        var m = System.Text.RegularExpressions.Regex.Match(
+                            text, @"""percentageRead""\s*:\s*([\d.]+)");
+                        if (m.Success && double.TryParse(m.Groups[1].Value,
+                            System.Globalization.NumberStyles.Any,
+                            System.Globalization.CultureInfo.InvariantCulture, out double pct))
+                        {
+                            int pctInt = (int)(pct * 100);
+                            return (pctInt >= 90 ? ReadStatus.Read : ReadStatus.Reading, pctInt);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // .sdr existe mas sem dados legíveis = pelo menos foi aberto
+            return (ReadStatus.Reading, -1);
+        }
+
         private void UpdateDetailsPanel(string mangaPath)
         {
             string mangaName = Path.GetFileName(mangaPath);
@@ -2307,6 +2637,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             SetDetailYesNo(DetailCleanup,    cleaned);
             SetDetailYesNo(DetailMobi,       hasMobi);
             SetDetailYesNo(DetailKindle,     onKindle);
+
+            _currentMangaPath = mangaPath;
+            var kindleRows = GetKindleVolumeStatuses(mangaPath, kindlePath);
+            KindleVolumeList.ItemsSource = kindleRows;
+            KindleVolumeSection.Visibility = kindleRows.Count > 0
+                ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void ClearDetailsPanel()
@@ -2321,6 +2657,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 tb.Foreground = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
             }
+            KindleVolumeList.ItemsSource = null;
+            KindleVolumeSection.Visibility = Visibility.Collapsed;
         }
 
         private void SetDetailYesNo(System.Windows.Controls.TextBlock tb, bool value)
@@ -2358,6 +2696,17 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 return XDocument.Load(xmlPath).Root?.Element("Writer")?.Value ?? "";
             }
             catch { return ""; }
+        }
+
+        private void KindleVolumeRow_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is System.Windows.Controls.Button btn && btn.Tag is KindleVolumeRow row)
+            {
+                row.CycleStatus();
+                if (!string.IsNullOrEmpty(_currentMangaPath) &&
+                    KindleVolumeList.ItemsSource is List<KindleVolumeRow> rows)
+                    SaveReadingProgress(_currentMangaPath, rows);
+            }
         }
 
         private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
