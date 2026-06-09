@@ -2,6 +2,8 @@
 using System.IO;
 using System.IO.Compression;
 using Microsoft.Data.Sqlite;
+using Docnet.Core;
+using Docnet.Core.Models;
 using System.Linq;
 using System.Diagnostics;
 using System.Net;
@@ -677,16 +679,6 @@ namespace MangaManager
             // Mostra percentual do Kindle quando disponível
             public string PercentText => Percentage >= 0 ? $" {Percentage}%" : "";
 
-            public void CycleStatus()
-            {
-                Percentage = -1; // reset percentual ao alternar manualmente
-                Status = Status switch
-                {
-                    ReadStatus.Unread  => ReadStatus.Reading,
-                    ReadStatus.Reading => ReadStatus.Read,
-                    _                  => ReadStatus.Unread,
-                };
-            }
         }
 
         private enum MangaStatus { None, Partial, Complete }
@@ -808,17 +800,20 @@ namespace MangaManager
                             Directory.GetFiles(kindleDest, "*.azw3").Length > 0);
             }
 
-            // Progresso de leitura a partir do JSON salvo
+            // Progresso de leitura a partir do JSON salvo (atualizado quando Kindle conectado)
             string readProgress = "";
-            if (onKindle || hasMobi)
+            if (hasMobi)
             {
-                int totalMobi = Directory.Exists(Path.Combine(fullPath, "Converted"))
-                    ? Directory.GetFiles(Path.Combine(fullPath, "Converted"), "*.mobi").Length : 0;
+                int totalMobi = Directory.GetFiles(Path.Combine(fullPath, "Converted"), "*.mobi").Length;
                 if (totalMobi > 0)
                 {
                     var saved = LoadReadingProgress(fullPath);
-                    int readCount = saved.Values.Count(s => s == ReadStatus.Read);
-                    readProgress = readCount > 0 ? $"{readCount}/{totalMobi}" : "";
+                    int readCount  = saved.Values.Count(s => s == ReadStatus.Read);
+                    int readingCount = saved.Values.Count(s => s == ReadStatus.Reading);
+                    if (readCount > 0 || readingCount > 0)
+                        readProgress = readCount == totalMobi
+                            ? $"✅ {readCount}/{totalMobi}"
+                            : $"{readCount}/{totalMobi}";
                 }
             }
 
@@ -852,12 +847,16 @@ namespace MangaManager
         }
 
         // Helper: retorna todos os arquivos de manga suportados (.cbz, .epub)
+        private static bool IsMangaFile(string f) =>
+            f.EndsWith(".cbz",  StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".pdf",  StringComparison.OrdinalIgnoreCase);
+
         private static string[] GetMangaFiles(string path, string searchPattern = "*",
             SearchOption option = SearchOption.TopDirectoryOnly)
         {
             return Directory.GetFiles(path, "*.*", option)
-                            .Where(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
-                                        f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase))
+                            .Where(IsMangaFile)
                             .OrderBy(f => f)
                             .ToArray();
         }
@@ -865,9 +864,7 @@ namespace MangaManager
         private static bool HasMangaFiles(string path,
             SearchOption option = SearchOption.TopDirectoryOnly)
         {
-            return Directory.GetFiles(path, "*.*", option)
-                            .Any(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
-                                      f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase));
+            return Directory.GetFiles(path, "*.*", option).Any(IsMangaFile);
         }
 
         private static bool HasConvertedFiles(string convertedFolder) =>
@@ -1477,14 +1474,21 @@ namespace MangaManager
                                 string fileDest = Path.Combine(volPath2, Path.GetFileName(cbz));
                                 if (!File.Exists(fileDest)) File.Move(cbz, fileDest);
 
-                                var psi2 = new ProcessStartInfo
+                                if (fileDest.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    FileName = zipPath,
-                                    Arguments = $"x \"{fileDest}\" -o\"{chDest2}\" -y",
-                                    CreateNoWindow = true,
-                                    UseShellExecute = false
-                                };
-                                Process.Start(psi2)?.WaitForExit();
+                                    ExtractPdf(fileDest, chDest2);
+                                }
+                                else
+                                {
+                                    var psi2 = new ProcessStartInfo
+                                    {
+                                        FileName = zipPath,
+                                        Arguments = $"x \"{fileDest}\" -o\"{chDest2}\" -y",
+                                        CreateNoWindow = true,
+                                        UseShellExecute = false
+                                    };
+                                    Process.Start(psi2)?.WaitForExit();
+                                }
                                 current++;
 
                                 Dispatcher.Invoke(() =>
@@ -1572,15 +1576,21 @@ namespace MangaManager
                         if (!File.Exists(cbzDest))
                             File.Move(cbz, cbzDest);
 
-                        var psi = new ProcessStartInfo
+                        if (cbzDest.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                         {
-                            FileName = zipPath,
-                            Arguments = $"x \"{cbzDest}\" -o\"{chDest}\" -y",
-                            CreateNoWindow = true,
-                            UseShellExecute = false
-                        };
-
-                        Process.Start(psi)?.WaitForExit();
+                            ExtractPdf(cbzDest, chDest);
+                        }
+                        else
+                        {
+                            var psi = new ProcessStartInfo
+                            {
+                                FileName = zipPath,
+                                Arguments = $"x \"{cbzDest}\" -o\"{chDest}\" -y",
+                                CreateNoWindow = true,
+                                UseShellExecute = false
+                            };
+                            Process.Start(psi)?.WaitForExit();
+                        }
                         current++;
 
                         Dispatcher.Invoke(() =>
@@ -1602,6 +1612,38 @@ namespace MangaManager
             {
                 Log($"Critical error in Organize: {ex.Message}");
                 MessageBox.Show($"Error:\n{ex.Message}\n\n{ex.StackTrace}", "Organize Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ==============================
+        // 📄 EXTRACT PDF → IMAGES
+        // ==============================
+        private static void ExtractPdf(string pdfPath, string destFolder)
+        {
+            Directory.CreateDirectory(destFolder);
+
+            using var lib = DocLib.Instance;
+            using var doc = lib.GetDocReader(pdfPath, new PageDimensions(1080, 1536));
+
+            int pageCount = doc.GetPageCount();
+            for (int i = 0; i < pageCount; i++)
+            {
+                using var page = doc.GetPageReader(i);
+                int w = page.GetPageWidth();
+                int h = page.GetPageHeight();
+                var rawBytes = page.GetImage(); // BGRA
+
+                using var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                var bmpData = bmp.LockBits(
+                    new System.Drawing.Rectangle(0, 0, w, h),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                System.Runtime.InteropServices.Marshal.Copy(rawBytes, 0, bmpData.Scan0, rawBytes.Length);
+                bmp.UnlockBits(bmpData);
+
+                string outPath = Path.Combine(destFolder, $"page{i + 1:D4}.jpg");
+                bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Jpeg);
             }
         }
 
@@ -1672,15 +1714,23 @@ namespace MangaManager
                         string dest = Path.Combine(vol, chapterName);
                         Directory.CreateDirectory(dest);
 
-                        var psi = new ProcessStartInfo
+                        bool isPdf = cbz.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+                        if (isPdf)
                         {
-                            FileName = zipPath,
-                            Arguments = $"x \"{cbz}\" -o\"{dest}\" -y",
-                            CreateNoWindow = true,
-                            UseShellExecute = false
-                        };
+                            ExtractPdf(cbz, dest);
+                        }
+                        else
+                        {
+                            var psi = new ProcessStartInfo
+                            {
+                                FileName = zipPath,
+                                Arguments = $"x \"{cbz}\" -o\"{dest}\" -y",
+                                CreateNoWindow = true,
+                                UseShellExecute = false
+                            };
+                            Process.Start(psi)?.WaitForExit();
+                        }
 
-                        Process.Start(psi)?.WaitForExit();
                         current++;
 
                         Dispatcher.Invoke(() =>
@@ -2277,6 +2327,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             SetCheck(BtnResize, hasMobiInConverted);
 
             BtnOpenKCC.IsEnabled = cleaned;
+            BtnRead.IsEnabled = hasImages;
             BtnSendToKindle.IsEnabled = hasMobiInConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
         }
@@ -2556,7 +2607,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 foreach (var file in Directory.GetFiles(sdrPath))
                 {
                     string ext = Path.GetExtension(file).ToLowerInvariant();
-                    var bytes = File.ReadAllBytes(file);
+
+                    // Abre com FileShare.ReadWrite para não bloquear enquanto Kindle está conectado
+                    byte[] bytes;
+                    using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        bytes = new byte[fs.Length];
+                        _ = fs.Read(bytes, 0, bytes.Length);
+                    }
                     var text = System.Text.Encoding.Latin1.GetString(bytes);
 
                     if (ext == ".azw3f" || ext == ".azw3r")
@@ -2643,6 +2701,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             KindleVolumeList.ItemsSource = kindleRows;
             KindleVolumeSection.Visibility = kindleRows.Count > 0
                 ? Visibility.Visible : Visibility.Collapsed;
+
+            // Persiste status detectado pelo Kindle para uso offline
+            if (kindlePath != null && kindleRows.Count > 0)
+                SaveReadingProgress(mangaPath, kindleRows);
         }
 
         private void ClearDetailsPanel()
@@ -2698,18 +2760,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             catch { return ""; }
         }
 
-        private void KindleVolumeRow_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is System.Windows.Controls.Button btn && btn.Tag is KindleVolumeRow row)
-            {
-                row.CycleStatus();
-                if (!string.IsNullOrEmpty(_currentMangaPath) &&
-                    KindleVolumeList.ItemsSource is List<KindleVolumeRow> rows)
-                    SaveReadingProgress(_currentMangaPath, rows);
-            }
-        }
-
-        private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
             if (MangaList.SelectedItem is MangaItem selected)
             {
@@ -2726,10 +2777,45 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
         }
 
+        // ── Manga Reader ───────────────────────────────────────────────────────
+        private void BtnRead_Click(object sender, RoutedEventArgs e)
+        {
+            if (MangaList.SelectedItem is not MangaItem item) return;
+            string path = Path.Combine(basePath, item.Name);
+            if (!Directory.Exists(path)) return;
+
+            bool hasImages = Directory.GetDirectories(path, "* - Volume *")
+                .Any(vol => Directory.GetDirectories(vol, "Capitulo *")
+                    .Any(ch => Directory.GetFiles(ch)
+                        .Any(f => f.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
+                                  f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
+                                  f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))));
+
+            if (!hasImages)
+            {
+                MessageBox.Show(
+                    "No extracted pages found for this manga.\n\n" +
+                    "Run 'Extract' first to unpack the chapter files.",
+                    "Manga Reader", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var reader = new ReaderWindow(path, item.Name);
+            reader.Owner = this;
+            // Refresh Kindle volume status after reader closes (progress was saved to JSON)
+            reader.Closed += (_, _) =>
+            {
+                if (MangaList.SelectedItem is MangaItem cur)
+                    UpdateDetailsPanel(Path.Combine(basePath, cur.Name));
+            };
+            reader.Show();
+        }
+
         private void ResetButtonStates()
         {
             BtnFetchAuthor.IsEnabled = true;
             BtnOrganize.IsEnabled = true;
+            BtnRead.IsEnabled = false;
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
             BtnResize.IsEnabled = false;

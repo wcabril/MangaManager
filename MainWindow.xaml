@@ -437,6 +437,29 @@
                     </Button.Template>
                 </Button>
 
+                <!-- READ MANGA -->
+                <Button x:Name="BtnRead" Click="BtnRead_Click" Height="26" Margin="0,3,0,0">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="26"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#E85D04"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                    <TextBlock Text="📖  Read Manga" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
                 <!-- VOLUME SELECTOR -->
                 <StackPanel Margin="0,8,0,0">
                     <TextBlock Text="Select which volumes you want to send to Kindle"
