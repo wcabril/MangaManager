@@ -90,11 +90,36 @@
             <!-- GRID DE CARDS -->
             <DockPanel Grid.Column="0">
                 <TextBlock DockPanel.Dock="Top" Text="Manga List" Foreground="White" FontSize="16" Margin="0,0,0,5"/>
-                <Button DockPanel.Dock="Bottom" Content="Refresh List" Click="Refresh_Click" Margin="0,8,0,0" Padding="0,5"/>
+                <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="Refresh List" Click="Refresh_Click" Padding="0,5" Margin="0,0,3,0"/>
+                    <Button Grid.Column="1" x:Name="BtnRead" Click="BtnRead_Click" Padding="0,5" Margin="3,0,0,0" IsEnabled="False">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="#E85D04" Opacity="{TemplateBinding Opacity}">
+                                    <TextBlock Text="📖  Read Manga" FontSize="11" Foreground="White"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#B84500"/>
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
                 <ScrollViewer x:Name="MangaScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <ListBox x:Name="MangaList" Background="Transparent" BorderThickness="0"
                              ItemContainerStyle="{StaticResource MangaCardStyle}"
                              SelectionChanged="MangaList_SelectionChanged"
+                             MouseDoubleClick="MangaList_DoubleClick"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
                              PreviewMouseWheel="MangaList_PreviewMouseWheel">
@@ -431,29 +456,6 @@
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsPressed" Value="True">
                                     <Setter TargetName="Bd" Property="Background" Value="#922B21"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Button.Template>
-                </Button>
-
-                <!-- READ MANGA -->
-                <Button x:Name="BtnRead" Click="BtnRead_Click" Height="26" Margin="0,3,0,0">
-                    <Button.Template>
-                        <ControlTemplate TargetType="Button">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="26"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <Rectangle Grid.Column="0" Fill="#E85D04"/>
-                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="📖  Read Manga" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                            </Grid>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsPressed" Value="True">
-                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>

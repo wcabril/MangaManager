@@ -2778,6 +2778,9 @@ private void MangaList_SelectionChanged(object sender, System.Windows.Controls.S
         }
 
         // ── Manga Reader ───────────────────────────────────────────────────────
+        private void MangaList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+            => BtnRead_Click(sender, e);
+
         private void BtnRead_Click(object sender, RoutedEventArgs e)
         {
             if (MangaList.SelectedItem is not MangaItem item) return;

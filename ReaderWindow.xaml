@@ -3,10 +3,89 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Manga Reader"
         Background="#0A0A0A"
-        WindowStyle="None"
-        WindowState="Maximized"
+        WindowStyle="SingleBorderWindow"
+        ResizeMode="CanResize"
+        Width="900" Height="700"
+        MinWidth="600" MinHeight="400"
+        WindowStartupLocation="CenterOwner"
         KeyDown="Window_KeyDown"
         Loaded="Window_Loaded">
+
+    <Window.Resources>
+        <!-- Dark ComboBox style that actually applies to the selected-item area -->
+        <Style x:Key="DarkCombo" TargetType="ComboBox">
+            <Setter Property="Foreground"        Value="White"/>
+            <Setter Property="Background"        Value="#2A2A2A"/>
+            <Setter Property="BorderBrush"       Value="#555"/>
+            <Setter Property="BorderThickness"   Value="1"/>
+            <Setter Property="Padding"           Value="6,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Border"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="3"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Grid.Column="0"
+                                    Content="{TemplateBinding SelectionBoxItem}"
+                                    ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                    Margin="{TemplateBinding Padding}"
+                                    VerticalAlignment="Center"
+                                    TextBlock.Foreground="White"
+                                    TextBlock.FontSize="{TemplateBinding FontSize}"/>
+                                <TextBlock Grid.Column="1" Text="▾"
+                                           Foreground="#888" FontSize="10"
+                                           VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                <ToggleButton Grid.Column="0" Grid.ColumnSpan="2"
+                                              IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                              Background="Transparent" BorderThickness="0"
+                                              Focusable="False"/>
+                            </Grid>
+                            <Popup x:Name="PART_Popup"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" Focusable="False"
+                                   PopupAnimation="Slide" Placement="Bottom">
+                                <Border Background="#1E1E1E" BorderBrush="#555" BorderThickness="1"
+                                        MaxHeight="300" MinWidth="{TemplateBinding ActualWidth}">
+                                    <ScrollViewer>
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="BorderBrush" Value="#888"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Resources>
+                <Style TargetType="ComboBoxItem">
+                    <Setter Property="Foreground"  Value="White"/>
+                    <Setter Property="Background"  Value="Transparent"/>
+                    <Setter Property="Padding"     Value="8,4"/>
+                    <Setter Property="FontSize"    Value="11"/>
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#3A3A3A"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="#2a4a10"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </Style.Resources>
+        </Style>
+    </Window.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -29,40 +108,14 @@
                 <!-- Volume selector -->
                 <ComboBox x:Name="VolumeCombo" Grid.Column="0" Width="140"
                           VerticalAlignment="Center" FontSize="11"
-                          SelectionChanged="VolumeCombo_Changed">
-                    <ComboBox.Resources>
-                        <Style TargetType="ComboBoxItem">
-                            <Setter Property="Background" Value="#1E1E1E"/>
-                            <Setter Property="Foreground" Value="White"/>
-                        </Style>
-                    </ComboBox.Resources>
-                    <ComboBox.Style>
-                        <Style TargetType="ComboBox">
-                            <Setter Property="Background" Value="#2A2A2A"/>
-                            <Setter Property="Foreground" Value="#CCCCCC"/>
-                            <Setter Property="BorderBrush" Value="#444"/>
-                        </Style>
-                    </ComboBox.Style>
-                </ComboBox>
+                          Style="{StaticResource DarkCombo}"
+                          SelectionChanged="VolumeCombo_Changed"/>
 
                 <!-- Chapter selector -->
-                <ComboBox x:Name="ChapterCombo" Grid.Column="1" Width="130"
+                <ComboBox x:Name="ChapterCombo" Grid.Column="1" Width="140"
                           VerticalAlignment="Center" FontSize="11" Margin="6,0,0,0"
-                          SelectionChanged="ChapterCombo_Changed">
-                    <ComboBox.Resources>
-                        <Style TargetType="ComboBoxItem">
-                            <Setter Property="Background" Value="#1E1E1E"/>
-                            <Setter Property="Foreground" Value="White"/>
-                        </Style>
-                    </ComboBox.Resources>
-                    <ComboBox.Style>
-                        <Style TargetType="ComboBox">
-                            <Setter Property="Background" Value="#2A2A2A"/>
-                            <Setter Property="Foreground" Value="#CCCCCC"/>
-                            <Setter Property="BorderBrush" Value="#444"/>
-                        </Style>
-                    </ComboBox.Style>
-                </ComboBox>
+                          Style="{StaticResource DarkCombo}"
+                          SelectionChanged="ChapterCombo_Changed"/>
 
                 <!-- Manga title -->
                 <TextBlock x:Name="TitleText" Grid.Column="2"

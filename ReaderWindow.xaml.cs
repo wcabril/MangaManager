@@ -122,7 +122,10 @@ namespace MangaManager
             foreach (var v in _pages.Select(p => p.VolumeName).Distinct())
                 VolumeCombo.Items.Add(v);
             if (VolumeCombo.Items.Count > 0)
+            {
                 VolumeCombo.SelectedIndex = 0;
+                BuildChapterCombo(VolumeCombo.Items[0] as string ?? "");
+            }
             _suppressComboEvents = false;
         }
 
