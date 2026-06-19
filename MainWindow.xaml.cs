@@ -874,7 +874,8 @@ namespace MangaManager
         private static bool IsMangaFile(string f) =>
             f.EndsWith(".cbz",  StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) ||
-            f.EndsWith(".pdf",  StringComparison.OrdinalIgnoreCase);
+            f.EndsWith(".pdf",  StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".mobi", StringComparison.OrdinalIgnoreCase);
 
         private static string[] GetMangaFiles(string path, string searchPattern = "*",
             SearchOption option = SearchOption.TopDirectoryOnly)
@@ -1502,6 +1503,10 @@ namespace MangaManager
                                 {
                                     ExtractPdf(fileDest, chDest2);
                                 }
+                                else if (fileDest.EndsWith(".mobi", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    MobiExtractor.ExtractTo(fileDest, chDest2);
+                                }
                                 else
                                 {
                                     var psi2 = new ProcessStartInfo
@@ -1603,6 +1608,10 @@ namespace MangaManager
                         if (cbzDest.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                         {
                             ExtractPdf(cbzDest, chDest);
+                        }
+                        else if (cbzDest.EndsWith(".mobi", StringComparison.OrdinalIgnoreCase))
+                        {
+                            MobiExtractor.ExtractTo(cbzDest, chDest);
                         }
                         else
                         {
@@ -1738,10 +1747,16 @@ namespace MangaManager
                         string dest = Path.Combine(vol, chapterName);
                         Directory.CreateDirectory(dest);
 
-                        bool isPdf = cbz.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+                        bool isPdf  = cbz.EndsWith(".pdf",  StringComparison.OrdinalIgnoreCase);
+                        bool isMobi = cbz.EndsWith(".mobi", StringComparison.OrdinalIgnoreCase);
                         if (isPdf)
                         {
                             ExtractPdf(cbz, dest);
+                        }
+                        else if (isMobi)
+                        {
+                            int pages = MobiExtractor.ExtractTo(cbz, dest);
+                            Dispatcher.Invoke(() => Log($"  ✓ {Path.GetFileName(cbz)} → {pages} pages"));
                         }
                         else
                         {

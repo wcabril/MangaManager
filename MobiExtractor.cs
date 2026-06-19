@@ -9,46 +9,51 @@ namespace MangaManager
     /// </summary>
     internal static class MobiExtractor
     {
+        /// <summary>Extracts to a temporary directory (auto-named). Returns path or null.</summary>
         public static string? ExtractToTemp(string mobiPath)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(),
+                "MangaManager_" + Path.GetFileNameWithoutExtension(mobiPath));
+
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            Directory.CreateDirectory(tempDir);
+
+            int count = ExtractImages(mobiPath, tempDir);
+            return count > 0 ? tempDir : null;
+        }
+
+        /// <summary>Extracts images directly into destFolder. Returns number of images written.</summary>
+        public static int ExtractTo(string mobiPath, string destFolder)
+        {
+            Directory.CreateDirectory(destFolder);
+            return ExtractImages(mobiPath, destFolder);
+        }
+
+        private static int ExtractImages(string mobiPath, string destFolder)
         {
             try
             {
                 byte[] data = File.ReadAllBytes(mobiPath);
 
-                // PalmDB: numRecords at offset 76 (uint16 big-endian)
-                if (data.Length < 82) return null;
+                if (data.Length < 82) return 0;
                 int numRecords = ReadU16(data, 76);
-                if (numRecords < 2) return null;
+                if (numRecords < 2) return 0;
 
-                // Record offsets: list starts at 78, each entry = 8 bytes
                 int[] offsets = new int[numRecords + 1];
                 for (int i = 0; i < numRecords; i++)
                     offsets[i] = (int)ReadU32(data, 78 + i * 8);
-                offsets[numRecords] = data.Length; // sentinel
+                offsets[numRecords] = data.Length;
 
-                // Record 0 = MOBI header
                 int r0 = offsets[0];
-                if (data.Length < r0 + 132) return null;
+                if (data.Length < r0 + 132) return 0;
 
-                // Verify "MOBI" magic at r0+16
                 if (data[r0 + 16] != 'M' || data[r0 + 17] != 'O' ||
                     data[r0 + 18] != 'B' || data[r0 + 19] != 'I')
-                    return null;
+                    return 0;
 
-                // First image record index is at MOBI header offset 92
-                // MOBI header starts at r0+16, so: r0+16+92 = r0+108
                 uint firstImage = ReadU32(data, r0 + 108);
                 if (firstImage == 0xFFFFFFFF || firstImage >= (uint)numRecords)
-                    return null;
-
-                // Create a clean temp dir named after the file
-                string tempDir = Path.Combine(Path.GetTempPath(),
-                    "MangaManager_" + Path.GetFileNameWithoutExtension(mobiPath));
-
-                // Wipe stale extractions
-                if (Directory.Exists(tempDir))
-                    Directory.Delete(tempDir, true);
-                Directory.CreateDirectory(tempDir);
+                    return 0;
 
                 int imgCount = 0;
                 for (int i = (int)firstImage; i < numRecords; i++)
@@ -57,20 +62,17 @@ namespace MangaManager
                     int end   = offsets[i + 1];
                     int len   = end - start;
                     if (len < 4) break;
+                    if (!IsImage(data, start)) break;
 
-                    if (!IsImage(data, start)) break; // stop at first non-image record
-
-                    string ext     = ImageExt(data, start);
-                    string imgFile = Path.Combine(tempDir, $"page{imgCount + 1:D4}{ext}");
-
+                    string imgFile = Path.Combine(destFolder, $"page{imgCount + 1:D4}{ImageExt(data, start)}");
                     using var fs = File.Create(imgFile);
                     fs.Write(data, start, len);
                     imgCount++;
                 }
 
-                return imgCount > 0 ? tempDir : null;
+                return imgCount;
             }
-            catch { return null; }
+            catch { return 0; }
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
