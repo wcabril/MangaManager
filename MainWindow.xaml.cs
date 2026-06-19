@@ -641,6 +641,10 @@ namespace MangaManager
             // "3/5" = 3 volumes lidos de 5 no Kindle; "" quando não há dados
             public string ReadProgress { get => _readProgress; set { _readProgress = value; OnChanged(nameof(ReadProgress)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
+
+            // Standalone MOBI file (not a manga folder)
+            public string? MobiFilePath { get; set; }
+            public bool IsMobiOnly => !string.IsNullOrEmpty(MobiFilePath);
         }
 
         private enum ReadStatus { Unread, Reading, Read }
@@ -758,6 +762,26 @@ namespace MangaManager
                 var item = BuildMangaItem(name!, fullPath, kindleDocsPath);
                 MangaList.Items.Add(item);
                 tasks.Add(LoadCoverAsync(item, fullPath));
+            }
+
+            // Standalone MOBI files directly in basePath
+            var mobiFiles = Directory.GetFiles(basePath, "*.mobi")
+                                     .OrderBy(f => f).ToArray();
+            foreach (var mobi in mobiFiles)
+            {
+                string name = Path.GetFileNameWithoutExtension(mobi);
+                var item = new MangaItem
+                {
+                    Name         = name,
+                    StatusColor  = "#2a1a00",
+                    StatusForeground = "#E85D04",
+                    StatusWeight = "Bold",
+                    StatusTip    = "Standalone MOBI file",
+                    Chk7         = "MOBI",
+                    MobiFilePath = mobi,
+                };
+                MangaList.Items.Add(item);
+                tasks.Add(LoadCoverAsync(item, Path.GetDirectoryName(mobi)!));
             }
 
             Log($"{MangaList.Items.Count} manga(s) found. Loading covers...");
@@ -2760,14 +2784,26 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             catch { return ""; }
         }
 
-private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
             if (MangaList.SelectedItem is MangaItem selected)
             {
-                string fullPath = Path.Combine(basePath, selected.Name);
-                UpdateButtonStates(fullPath);
-                UpdateDetailsPanel(fullPath);
-                StartWatcher(fullPath);
+                if (selected.IsMobiOnly)
+                {
+                    ResetButtonStates();
+                    BtnRead.IsEnabled = true;
+                    ClearDetailsPanel();
+                    DetailMangaName.Text = selected.Name;
+                    DetailAuthor.Text = "MOBI file";
+                    _watcher?.Dispose();
+                }
+                else
+                {
+                    string fullPath = Path.Combine(basePath, selected.Name);
+                    UpdateButtonStates(fullPath);
+                    UpdateDetailsPanel(fullPath);
+                    StartWatcher(fullPath);
+                }
             }
             else
             {
@@ -2784,33 +2820,46 @@ private void MangaList_SelectionChanged(object sender, System.Windows.Controls.S
         private void BtnRead_Click(object sender, RoutedEventArgs e)
         {
             if (MangaList.SelectedItem is not MangaItem item) return;
-            string path = Path.Combine(basePath, item.Name);
-            if (!Directory.Exists(path)) return;
 
-            bool hasImages = Directory.GetDirectories(path, "* - Volume *")
-                .Any(vol => Directory.GetDirectories(vol, "Capitulo *")
-                    .Any(ch => Directory.GetFiles(ch)
-                        .Any(f => f.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
-                                  f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
-                                  f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))));
+            ReaderWindow reader;
 
-            if (!hasImages)
+            if (item.IsMobiOnly)
             {
-                MessageBox.Show(
-                    "No extracted pages found for this manga.\n\n" +
-                    "Run 'Extract' first to unpack the chapter files.",
-                    "Manga Reader", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                reader = new ReaderWindow(item.MobiFilePath!);
+            }
+            else
+            {
+                string path = Path.Combine(basePath, item.Name);
+                if (!Directory.Exists(path)) return;
+
+                bool hasImages = Directory.GetDirectories(path, "* - Volume *")
+                    .Any(vol => Directory.GetDirectories(vol, "Capitulo *")
+                        .Any(ch => Directory.GetFiles(ch)
+                            .Any(f => f.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
+                                      f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
+                                      f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))));
+
+                bool hasMobi = Directory.Exists(Path.Combine(path, "Converted")) &&
+                               Directory.GetFiles(Path.Combine(path, "Converted"), "*.mobi").Length > 0;
+
+                if (!hasImages && !hasMobi)
+                {
+                    MessageBox.Show(
+                        "No extracted pages or MOBI files found for this manga.\n\n" +
+                        "Run 'Extract' first to unpack the chapter files.",
+                        "Manga Reader", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                reader = new ReaderWindow(path, item.Name);
+                reader.Closed += (_, _) =>
+                {
+                    if (MangaList.SelectedItem is MangaItem cur && !cur.IsMobiOnly)
+                        UpdateDetailsPanel(Path.Combine(basePath, cur.Name));
+                };
             }
 
-            var reader = new ReaderWindow(path, item.Name);
             reader.Owner = this;
-            // Refresh Kindle volume status after reader closes (progress was saved to JSON)
-            reader.Closed += (_, _) =>
-            {
-                if (MangaList.SelectedItem is MangaItem cur)
-                    UpdateDetailsPanel(Path.Combine(basePath, cur.Name));
-            };
             reader.Show();
         }
 

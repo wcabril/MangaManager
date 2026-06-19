@@ -39,10 +39,31 @@ namespace MangaManager
         public ReaderWindow(string mangaPath, string mangaName)
         {
             InitializeComponent();
-            _mangaPath  = mangaPath;
+            _mangaPath     = mangaPath;
             TitleText.Text = mangaName;
-
             LoadStructure();
+            Closed += (_, _) => CleanupTempDirs();
+        }
+
+        // Constructor for a standalone MOBI file
+        public ReaderWindow(string mobiFilePath)
+        {
+            InitializeComponent();
+            _mangaPath     = Path.GetDirectoryName(mobiFilePath)!;
+            TitleText.Text = Path.GetFileNameWithoutExtension(mobiFilePath);
+
+            string? tempDir = MobiExtractor.ExtractToTemp(mobiFilePath);
+            if (tempDir != null)
+            {
+                _tempDirs.Add(tempDir);
+                var images = Directory.GetFiles(tempDir)
+                    .Where(IsImageFile).OrderBy(f => f).ToArray();
+                for (int pi = 0; pi < images.Length; pi++)
+                    _pages.Add(new PageEntry(images[pi], "Vol. 01", "Pages",
+                        tempDir, pi, images.Length, true, pi));
+
+                BuildVolumeCombo();
+            }
             Closed += (_, _) => CleanupTempDirs();
         }
 
