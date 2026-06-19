@@ -32,6 +32,9 @@ namespace MangaManager
         // Track which volumes we've already updated this session (avoid file I/O spam)
         private readonly HashSet<string> _updatedThisSession = new();
 
+        // Temp dirs created for MOBI extraction — cleaned up on close
+        private readonly List<string> _tempDirs = new();
+
         // ── Constructor ───────────────────────────────────────────────────────
         public ReaderWindow(string mangaPath, string mangaName)
         {
@@ -40,6 +43,7 @@ namespace MangaManager
             TitleText.Text = mangaName;
 
             LoadStructure();
+            Closed += (_, _) => CleanupTempDirs();
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -63,31 +67,33 @@ namespace MangaManager
 
             if (!Directory.Exists(_mangaPath)) return;
 
-            // Find volume folders: "* - Volume *"  or  "* Volume *"
+            // ── 1. Extracted volume folders ─────────────────────────────────
             var volumes = Directory.GetDirectories(_mangaPath)
                 .Where(d => Regex.IsMatch(Path.GetFileName(d),
                     @"[Vv]olume\s*\d+", RegexOptions.IgnoreCase))
                 .OrderBy(d => d)
                 .ToArray();
 
+            // Track which volume numbers already have extracted images
+            var extractedVolNums = new HashSet<int>();
             int globalIndex = 0;
 
             foreach (var vol in volumes)
             {
-                // Short name: "Vol. 05"
                 var m = Regex.Match(Path.GetFileName(vol), @"[Vv]olume\s*(\d+)");
                 string shortVol = m.Success
                     ? $"Vol. {int.Parse(m.Groups[1].Value):D2}"
                     : Path.GetFileName(vol);
+                int volNum = m.Success ? int.Parse(m.Groups[1].Value) : -1;
 
-                // Chapter folders: "Capitulo *"
                 var chapters = Directory.GetDirectories(vol, "Capitulo *")
                     .OrderBy(c => c).ToArray();
 
+                bool addedAny = false;
                 for (int ci = 0; ci < chapters.Length; ci++)
                 {
-                    string chName      = Path.GetFileName(chapters[ci]);
-                    bool   isLastCh    = ci == chapters.Length - 1;
+                    string chName   = Path.GetFileName(chapters[ci]);
+                    bool   isLastCh = ci == chapters.Length - 1;
 
                     var images = Directory.GetFiles(chapters[ci])
                         .Where(IsImageFile)
@@ -100,12 +106,64 @@ namespace MangaManager
                             images[pi], shortVol, chName, vol,
                             pi, images.Length, isLastCh, globalIndex));
                         globalIndex++;
+                        addedAny = true;
+                    }
+                }
+
+                if (addedAny && volNum >= 0)
+                    extractedVolNums.Add(volNum);
+            }
+
+            // ── 2. MOBI files from Converted/ folder ─────────────────────────
+            string convertedDir = Path.Combine(_mangaPath, "Converted");
+            if (Directory.Exists(convertedDir))
+            {
+                var mobiFiles = Directory.GetFiles(convertedDir, "*.mobi")
+                    .OrderBy(f => f).ToArray();
+
+                foreach (var mobi in mobiFiles)
+                {
+                    var m = Regex.Match(Path.GetFileName(mobi), @"[Vv]olume\s*(\d+)");
+                    int volNum = m.Success ? int.Parse(m.Groups[1].Value) : -1;
+
+                    // Skip if we already have extracted images for this volume
+                    if (volNum >= 0 && extractedVolNums.Contains(volNum)) continue;
+
+                    string shortVol = volNum >= 0
+                        ? $"Vol. {volNum:D2} (MOBI)"
+                        : $"{Path.GetFileNameWithoutExtension(mobi)} (MOBI)";
+
+                    // Extract images from MOBI to temp dir
+                    string? tempDir = MobiExtractor.ExtractToTemp(mobi);
+                    if (tempDir == null) continue;
+                    _tempDirs.Add(tempDir);
+
+                    var images = Directory.GetFiles(tempDir)
+                        .Where(IsImageFile)
+                        .OrderBy(f => f)
+                        .ToArray();
+
+                    for (int pi = 0; pi < images.Length; pi++)
+                    {
+                        _pages.Add(new PageEntry(
+                            images[pi], shortVol, "Pages", tempDir,
+                            pi, images.Length, true, globalIndex));
+                        globalIndex++;
                     }
                 }
             }
 
             if (_pages.Count > 0)
                 BuildVolumeCombo();
+        }
+
+        private void CleanupTempDirs()
+        {
+            foreach (var dir in _tempDirs)
+            {
+                try { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+                catch { }
+            }
         }
 
         private static bool IsImageFile(string f) =>
