@@ -2464,22 +2464,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         {
             var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             string dbPath = Path.Combine(kindleRoot, "system", "reader.db");
-            Log($"📱 Procurando reader.db em: {dbPath}");
             if (!File.Exists(dbPath))
             {
-                // Tenta também dentro de subpastas comuns
                 var alt = Directory.GetFiles(kindleRoot, "reader.db", SearchOption.AllDirectories)
                                    .FirstOrDefault();
                 if (alt != null)
-                {
-                    Log($"📱 reader.db encontrado em: {alt}");
                     dbPath = alt;
-                }
                 else
-                {
-                    Log("📱 reader.db não encontrado. Kindle pode estar desconectado ou usar outro caminho.");
-                    return result;
-                }
+                    return result; // Kindle sem reader.db — fallback para .sdr
             }
 
             string tmp = Path.Combine(Path.GetTempPath(), "mm_reader_tmp.db");
@@ -2498,7 +2490,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     while (r.Read()) tables.Add(r.GetString(0));
                 }
 
-                Log($"📱 Kindle reader.db — tabelas: {string.Join(", ", tables)}");
+                // tabelas encontradas no reader.db
 
                 // Tenta cada schema conhecido
                 TryReadSchema(conn, tables, result,
@@ -2521,11 +2513,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                         keyCol: "key", pctCol: "percentageRead", scale: 100.0);
                 }
 
-                Log($"📱 Kindle reader.db — {result.Count} livro(s) com progresso encontrado(s).");
+                if (result.Count > 0) Log($"📱 Kindle reader.db — {result.Count} livro(s) com progresso.");
             }
             catch (Exception ex)
             {
-                Log($"📱 Kindle reader.db — erro: {ex.Message}");
+                // reader.db ilegível — fallback para .sdr
             }
             finally
             {
