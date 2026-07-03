@@ -764,24 +764,29 @@ namespace MangaManager
                 tasks.Add(LoadCoverAsync(item, fullPath));
             }
 
-            // Standalone MOBI files directly in basePath
-            var mobiFiles = Directory.GetFiles(basePath, "*.mobi")
-                                     .OrderBy(f => f).ToArray();
-            foreach (var mobi in mobiFiles)
+            // Standalone source files directly in basePath (MOBI, CBZ, EPUB)
+            var standaloneFiles = Directory.GetFiles(basePath)
+                .Where(f => f.EndsWith(".mobi", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".cbz",  StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => f).ToArray();
+
+            foreach (var file in standaloneFiles)
             {
-                string name = Path.GetFileNameWithoutExtension(mobi);
+                string ext  = Path.GetExtension(file).TrimStart('.').ToUpper();
+                string name = Path.GetFileNameWithoutExtension(file);
                 var item = new MangaItem
                 {
-                    Name         = name,
-                    StatusColor  = "#2a1a00",
+                    Name             = name,
+                    StatusColor      = "#1a1a2a",
                     StatusForeground = "#E85D04",
-                    StatusWeight = "Bold",
-                    StatusTip    = "Standalone MOBI file",
-                    Chk7         = "MOBI",
-                    MobiFilePath = mobi,
+                    StatusWeight     = "Bold",
+                    StatusTip        = $"Standalone {ext} file",
+                    Chk7             = ext,
+                    MobiFilePath     = file,
                 };
                 MangaList.Items.Add(item);
-                tasks.Add(LoadCoverAsync(item, Path.GetDirectoryName(mobi)!));
+                tasks.Add(LoadCoverAsync(item, Path.GetDirectoryName(file)!));
             }
 
             Log($"{MangaList.Items.Count} manga(s) found. Loading covers...");
@@ -2832,7 +2837,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             if (item.IsMobiOnly)
             {
-                reader = new ReaderWindow(item.MobiFilePath!);
+                reader = new ReaderWindow(item.MobiFilePath!); // handles MOBI, CBZ, EPUB
             }
             else
             {

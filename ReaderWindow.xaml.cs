@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -45,14 +46,17 @@ namespace MangaManager
             Closed += (_, _) => CleanupTempDirs();
         }
 
-        // Constructor for a standalone MOBI file
-        public ReaderWindow(string mobiFilePath)
+        // Constructor for a standalone source file (MOBI or CBZ)
+        public ReaderWindow(string sourceFilePath)
         {
             InitializeComponent();
-            _mangaPath     = Path.GetDirectoryName(mobiFilePath)!;
-            TitleText.Text = Path.GetFileNameWithoutExtension(mobiFilePath);
+            _mangaPath     = Path.GetDirectoryName(sourceFilePath)!;
+            TitleText.Text = Path.GetFileNameWithoutExtension(sourceFilePath);
 
-            string? tempDir = MobiExtractor.ExtractToTemp(mobiFilePath);
+            string? tempDir = IsCbz(sourceFilePath)
+                ? ExtractCbzToTemp(sourceFilePath)
+                : MobiExtractor.ExtractToTemp(sourceFilePath);
+
             if (tempDir != null)
             {
                 _tempDirs.Add(tempDir);
@@ -75,9 +79,11 @@ namespace MangaManager
             {
                 EmptyPanel.Visibility = Visibility.Visible;
                 EmptyText.Text =
-                    "No extracted pages found.\n\n" +
-                    "Run 'Extract' on the main window first to unpack the chapter files,\n" +
-                    "then open the reader again.";
+                    "No pages found.\n\n" +
+                    "Make sure the manga folder contains:\n" +
+                    "• Extracted image folders (Capitulo XXX/)\n" +
+                    "• Or CBZ / EPUB files inside the volume folders\n" +
+                    "• Or MOBI files in the Converted/ folder";
             }
         }
 
@@ -128,6 +134,35 @@ namespace MangaManager
                             pi, images.Length, isLastCh, globalIndex));
                         globalIndex++;
                         addedAny = true;
+                    }
+                }
+
+                // If no extracted images found, try CBZ files inside the volume folder
+                if (!addedAny)
+                {
+                    var cbzFiles = Directory.GetFiles(vol)
+                        .Where(IsCbz).OrderBy(f => f).ToArray();
+
+                    for (int ci = 0; ci < cbzFiles.Length; ci++)
+                    {
+                        string chName   = Path.GetFileNameWithoutExtension(cbzFiles[ci]);
+                        bool   isLastCh = ci == cbzFiles.Length - 1;
+
+                        string? tempDir = ExtractCbzToTemp(cbzFiles[ci]);
+                        if (tempDir == null) continue;
+                        _tempDirs.Add(tempDir);
+
+                        var images = Directory.GetFiles(tempDir)
+                            .Where(IsImageFile).OrderBy(f => f).ToArray();
+
+                        for (int pi = 0; pi < images.Length; pi++)
+                        {
+                            _pages.Add(new PageEntry(
+                                images[pi], shortVol, chName, vol,
+                                pi, images.Length, isLastCh, globalIndex));
+                            globalIndex++;
+                            addedAny = true;
+                        }
                     }
                 }
 
@@ -192,6 +227,38 @@ namespace MangaManager
             f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsCbz(string f) =>
+            f.EndsWith(".cbz",  StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".zip",  StringComparison.OrdinalIgnoreCase);
+
+        private static string? ExtractCbzToTemp(string cbzPath)
+        {
+            try
+            {
+                string tempDir = Path.Combine(Path.GetTempPath(),
+                    "MangaManager_" + Path.GetFileNameWithoutExtension(cbzPath));
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                Directory.CreateDirectory(tempDir);
+
+                using var zip = ZipFile.OpenRead(cbzPath);
+                var entries = zip.Entries
+                    .Where(e => IsImageFile(e.Name))
+                    .OrderBy(e => e.FullName)
+                    .ToArray();
+
+                for (int i = 0; i < entries.Length; i++)
+                {
+                    string ext  = Path.GetExtension(entries[i].Name);
+                    string dest = Path.Combine(tempDir, $"page{i + 1:D4}{ext}");
+                    entries[i].ExtractToFile(dest);
+                }
+
+                return entries.Length > 0 ? tempDir : null;
+            }
+            catch { return null; }
+        }
 
         // ── Combo boxes ───────────────────────────────────────────────────────
         private void BuildVolumeCombo()
