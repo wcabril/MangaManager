@@ -27,6 +27,8 @@ namespace MangaManager
         CancellationTokenSource? _cts;
         FileSystemWatcher? _watcher;
         string _currentMangaPath = string.Empty;
+        bool _isAnimeUnitedMode = false;
+        bool _isAnimeUnitedAdmin = false;
 
         // Constantes para detecção de USB
         private const int WM_DEVICECHANGE = 0x0219;
@@ -85,6 +87,67 @@ namespace MangaManager
                 Properties.Settings.Default.SenderAppPassword = AppPasswordBox.Password;
                 Properties.Settings.Default.Save();
             };
+
+            // Carrega configurações do AnimeUnited (API URL/Key já vêm fixas nas settings, não são editáveis aqui)
+            AnimeUnitedEmailBox.Text = Properties.Settings.Default.AnimeUnitedUserEmail;
+            AnimeUnitedEmailBox.LostFocus += (s, e) => RefreshAnimeUnitedAdminStatus();
+            RefreshAnimeUnitedAdminStatus();
+
+            Loaded += async (s, e) => await RunFirstRunWizardIfNeeded();
+        }
+
+        // ==============================
+        // 🚀 PRIMEIRA EXECUÇÃO
+        // ==============================
+        private async Task RunFirstRunWizardIfNeeded()
+        {
+            bool hasFolder = !string.IsNullOrEmpty(Properties.Settings.Default.BasePath) &&
+                             Directory.Exists(Properties.Settings.Default.BasePath);
+            if (hasFolder) return;
+
+            MessageBox.Show("Selecione a pasta onde estão seus mangás locais.", "MangaManager",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            SelectFolder_Click(this, new RoutedEventArgs());
+
+            var isSupporter = MessageBox.Show("Você é Apoiador UnitedCast?", "UnitedCast",
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (isSupporter != MessageBoxResult.Yes) return;
+
+            var emailWindow = new EmailPromptWindow { Owner = this };
+            if (emailWindow.ShowDialog() != true || string.IsNullOrWhiteSpace(emailWindow.Email)) return;
+
+            string email = emailWindow.Email.Trim();
+            AnimeUnitedEmailBox.Text = email;
+            Properties.Settings.Default.AnimeUnitedUserEmail = email;
+            Properties.Settings.Default.Save();
+
+            try
+            {
+                var client = new AnimeUnitedClient(Properties.Settings.Default.AnimeUnitedApiUrl,
+                    Properties.Settings.Default.AnimeUnitedApiKey, email);
+                var access = await client.CheckAccessAsync();
+
+                if (access.HasAccess)
+                {
+                    string greeting = string.IsNullOrWhiteSpace(access.Name) ? "" : $" {access.Name}";
+                    MessageBox.Show(
+                        $"Olá{greeting}. Obrigado por fazer parte do grupo de apoiadores do UnitedCast. Aproveite a leitura.",
+                        "UnitedCast", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show("Infelizmente não foi possível autenticar seu email", "UnitedCast",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"AnimeUnited: could not validate email ({ex.Message}).");
+                MessageBox.Show("Infelizmente não foi possível autenticar seu email", "UnitedCast",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            RefreshAnimeUnitedAdminStatus();
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -622,7 +685,7 @@ namespace MangaManager
             private string _name = "", _statusColor = "Transparent", _statusForeground = "White",
                            _statusWeight = "Normal", _statusTip = "",
                            _chk1 = "", _chk2 = "", _chk3 = "", _chk4 = "", _chk5 = "",
-                           _chk6 = "", _chk7 = "", _chkKindle = "", _readProgress = "";
+                           _chk6 = "", _chk7 = "", _chkKindle = "", _chkAnimeUnited = "", _chkLanguage = "", _readProgress = "";
             private System.Windows.Media.ImageSource? _coverImage;
 
             public string Name { get => _name; set { _name = value; OnChanged(nameof(Name)); } }
@@ -638,6 +701,9 @@ namespace MangaManager
             public string Chk6 { get => _chk6; set { _chk6 = value; OnChanged(nameof(Chk6)); } }
             public string Chk7 { get => _chk7; set { _chk7 = value; OnChanged(nameof(Chk7)); } }
             public string ChkKindle { get => _chkKindle; set { _chkKindle = value; OnChanged(nameof(ChkKindle)); } }
+            public string ChkAnimeUnited { get => _chkAnimeUnited; set { _chkAnimeUnited = value; OnChanged(nameof(ChkAnimeUnited)); } }
+            public string ChkLanguage { get => _chkLanguage; set { _chkLanguage = value; OnChanged(nameof(ChkLanguage)); OnChanged(nameof(HasLanguage)); } }
+            public Visibility HasLanguage => string.IsNullOrEmpty(ChkLanguage) ? Visibility.Collapsed : Visibility.Visible;
             // "3/5" = 3 volumes lidos de 5 no Kindle; "" quando não há dados
             public string ReadProgress { get => _readProgress; set { _readProgress = value; OnChanged(nameof(ReadProgress)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
@@ -645,6 +711,11 @@ namespace MangaManager
             // Standalone MOBI file (not a manga folder)
             public string? MobiFilePath { get; set; }
             public bool IsMobiOnly => !string.IsNullOrEmpty(MobiFilePath);
+
+            // AnimeUnited: item veio do catálogo remoto e ainda não foi baixado
+            public bool IsRemote { get; set; }
+            public int RemoteVolumeCount { get; set; }
+            public string? RemoteCoverUrl { get; set; }
         }
 
         private enum ReadStatus { Unread, Reading, Read }
@@ -755,11 +826,32 @@ namespace MangaManager
             // Detecta Kindle uma vez para todos os cards
             string? kindleDocsPath = FindKindlePath();
 
+            // Se for admin, busca o catálogo do AnimeUnited uma vez para marcar quem já está no servidor
+            HashSet<string>? animeUnitedNames = null;
+            if (_isAnimeUnitedAdmin)
+            {
+                string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+                if (!string.IsNullOrWhiteSpace(apiUrl))
+                {
+                    try
+                    {
+                        var client = new AnimeUnitedClient(apiUrl, Properties.Settings.Default.AnimeUnitedApiKey,
+                            Properties.Settings.Default.AnimeUnitedUserEmail);
+                        var remoteMangas = await client.GetMangasAsync();
+                        animeUnitedNames = remoteMangas.Select(m => m.Name).ToHashSet();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"AnimeUnited: could not check server status ({ex.Message}).");
+                    }
+                }
+            }
+
             var tasks = new List<Task>();
             foreach (var name in dirs)
             {
                 string fullPath = Path.Combine(basePath, name!);
-                var item = BuildMangaItem(name!, fullPath, kindleDocsPath);
+                var item = BuildMangaItem(name!, fullPath, kindleDocsPath, animeUnitedNames);
                 MangaList.Items.Add(item);
                 tasks.Add(LoadCoverAsync(item, fullPath));
             }
@@ -796,7 +888,8 @@ namespace MangaManager
                 Dispatcher.Invoke(() => Log("Covers loaded.")));
         }
 
-        private MangaItem BuildMangaItem(string name, string fullPath, string? kindleDocsPath = null)
+        private MangaItem BuildMangaItem(string name, string fullPath, string? kindleDocsPath = null,
+                                          HashSet<string>? animeUnitedNames = null)
         {
             var volumes = Directory.GetDirectories(fullPath, "* - Volume *");
 
@@ -829,6 +922,9 @@ namespace MangaManager
                             Directory.GetFiles(kindleDest, "*.azw3").Length > 0);
             }
 
+            // Idioma gravado no ComicInfo.xml (LanguageISO), se já existir
+            string languageBadge = LanguageBadge(ReadLanguageFromComicInfo(fullPath));
+
             // Progresso de leitura a partir do JSON salvo (atualizado quando Kindle conectado)
             string readProgress = "";
             if (hasMobi)
@@ -860,6 +956,8 @@ namespace MangaManager
                 Chk6 = s6 ? "✔" : "",
                 Chk7 = s7 ? "✔" : "",
                 ChkKindle = onKindle ? "📱" : "",
+                ChkAnimeUnited = (animeUnitedNames != null && animeUnitedNames.Contains(name)) ? "☁" : "",
+                ChkLanguage = languageBadge,
                 ReadProgress = readProgress,
             };
         }
@@ -1801,6 +1899,7 @@ namespace MangaManager
             if (path == null) return;
 
             var author = AuthorBox.Text.Trim();
+            var language = (LanguageCombo.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "pt-BR";
 
             if (string.IsNullOrWhiteSpace(author))
             {
@@ -1825,7 +1924,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
   <Volume>{volNum}</Volume>
   <Writer>{author}</Writer>
   <Genre>Manga</Genre>
-  <LanguageISO>pt</LanguageISO>
+  <LanguageISO>{language}</LanguageISO>
   <Format>Manga</Format>
 </ComicInfo>");
 
@@ -1842,7 +1941,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
   <Volume>{volNum}</Volume>
   <Writer>{author}</Writer>
   <Genre>Manga</Genre>
-  <LanguageISO>pt</LanguageISO>
+  <LanguageISO>{language}</LanguageISO>
   <Format>Manga</Format>
 </ComicInfo>");
 
@@ -2099,6 +2198,47 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 !string.IsNullOrWhiteSpace(SenderEmailBox.Text) &&
                 !string.IsNullOrWhiteSpace(AppPasswordBox.Password) &&
                 !string.IsNullOrWhiteSpace(KindleEmailBox.Text);
+        }
+
+        private void AnimeUnitedFields_Changed(object sender, System.Windows.RoutedEventArgs e)
+        {
+            if (AnimeUnitedEmailBox == null) return;
+
+            Properties.Settings.Default.AnimeUnitedUserEmail = AnimeUnitedEmailBox.Text.Trim();
+            Properties.Settings.Default.Save();
+        }
+
+        private void AnimeUnitedSave_Click(object sender, RoutedEventArgs e)
+        {
+            AnimeUnitedFields_Changed(sender, e);
+            Log("AnimeUnited: configurações salvas.");
+            RefreshAnimeUnitedAdminStatus();
+        }
+
+        // Consulta o servidor (tabela de usuários) para saber se o email atual tem nível de acesso admin.
+        private async void RefreshAnimeUnitedAdminStatus()
+        {
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            string email  = Properties.Settings.Default.AnimeUnitedUserEmail;
+
+            bool isAdmin = false;
+            if (!string.IsNullOrWhiteSpace(apiUrl) && !string.IsNullOrWhiteSpace(email))
+            {
+                try
+                {
+                    var client = new AnimeUnitedClient(apiUrl, Properties.Settings.Default.AnimeUnitedApiKey, email);
+                    isAdmin = await client.CheckIsAdminAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log($"AnimeUnited: could not check access level ({ex.Message}).");
+                }
+            }
+
+            _isAnimeUnitedAdmin = isAdmin;
+            BtnUpload.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
+            LanguageFieldRow.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
+            if (!_isAnimeUnitedMode) LoadMangas();
         }
         private async void SendByEmail_Click(object sender, RoutedEventArgs e)
         {
@@ -2374,6 +2514,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnRead.IsEnabled = hasImages;
             BtnSendToKindle.IsEnabled = hasMobiInConverted;
             BtnRemoveFromKindle.IsEnabled = kindleConnected;
+            BtnUpload.IsEnabled = hasImages;
         }
 
         // Busca o primeiro TextBlock com Text="✔ " dentro do botão e alterna visibilidade
@@ -2423,6 +2564,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             selected.Chk6 = updated.Chk6;
             selected.Chk7 = updated.Chk7;
             selected.ChkKindle = updated.ChkKindle;
+            selected.ChkLanguage = updated.ChkLanguage;
             selected.ReadProgress = updated.ReadProgress;
 
             UpdateButtonStates(fullPath);
@@ -2700,6 +2842,32 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             int totalChapters = volumes.Sum(v =>
                 Directory.GetDirectories(v, "Capitulo *").Length);
 
+            string author = ReadAuthorFromComicInfo(mangaPath);
+
+            DetailMangaName.Text = mangaName;
+            DetailAuthor.Text    = string.IsNullOrEmpty(author) ? "—" : author;
+            DetailVolumes.Text   = volumes.Length > 0 ? volumes.Length.ToString() : "—";
+            DetailChapters.Text  = totalChapters > 0 ? totalChapters.ToString() : "—";
+
+            _currentMangaPath = mangaPath;
+
+            if (_isAnimeUnitedMode)
+            {
+                // Modo AnimeUnited: nada de pipeline local/Kindle, só progresso de leitura.
+                LocalPipelineStatusSection.Visibility = Visibility.Collapsed;
+                KindleVolumeList.ItemsSource = null;
+                KindleVolumeSection.Visibility = Visibility.Collapsed;
+
+                var readRows = GetReadVolumeStatuses(mangaPath);
+                ReadVolumeList.ItemsSource = readRows;
+                ReadVolumeSection.Visibility = readRows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                return;
+            }
+
+            LocalPipelineStatusSection.Visibility = Visibility.Visible;
+            ReadVolumeList.ItemsSource = null;
+            ReadVolumeSection.Visibility = Visibility.Collapsed;
+
             bool extracted = volumes.Any(v =>
                 Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                     Directory.GetFiles(ch, "*.jpg").Length > 0 ||
@@ -2719,20 +2887,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 Directory.Exists(Path.Combine(kindlePath, "Mangas", mangaName)) &&
                 Directory.GetFiles(Path.Combine(kindlePath, "Mangas", mangaName), "*.mobi").Length > 0;
 
-            string author = ReadAuthorFromComicInfo(mangaPath);
-
-            DetailMangaName.Text = mangaName;
-            DetailAuthor.Text    = string.IsNullOrEmpty(author) ? "—" : author;
-            DetailVolumes.Text   = volumes.Length > 0 ? volumes.Length.ToString() : "—";
-            DetailChapters.Text  = totalChapters > 0 ? totalChapters.ToString() : "—";
-
             SetDetailYesNo(DetailExtracted,  extracted);
             SetDetailYesNo(DetailComicInfo,  hasComicInfo);
             SetDetailYesNo(DetailCleanup,    cleaned);
             SetDetailYesNo(DetailMobi,       hasMobi);
             SetDetailYesNo(DetailKindle,     onKindle);
 
-            _currentMangaPath = mangaPath;
             var kindleRows = GetKindleVolumeStatuses(mangaPath, kindlePath);
             KindleVolumeList.ItemsSource = kindleRows;
             KindleVolumeSection.Visibility = kindleRows.Count > 0
@@ -2741,6 +2901,27 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             // Persiste status detectado pelo Kindle para uso offline
             if (kindlePath != null && kindleRows.Count > 0)
                 SaveReadingProgress(mangaPath, kindleRows);
+        }
+
+        // Status de leitura por volume sem depender de MOBI/Kindle — usado no modo AnimeUnited.
+        private List<KindleVolumeRow> GetReadVolumeStatuses(string mangaPath)
+        {
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *").OrderBy(v => v).ToArray();
+            if (volumes.Length == 0) return new();
+
+            var saved = LoadReadingProgress(mangaPath);
+
+            var rows = new List<KindleVolumeRow>();
+            foreach (var vol in volumes)
+            {
+                string volName = Path.GetFileName(vol);
+                var m = System.Text.RegularExpressions.Regex.Match(volName, @"[Vv]olume\s+(\d+)");
+                string shortName = m.Success ? $"Vol. {int.Parse(m.Groups[1].Value):D2}" : volName;
+
+                ReadStatus status = saved.TryGetValue(shortName, out var s) ? s : ReadStatus.Unread;
+                rows.Add(new KindleVolumeRow { VolumeName = shortName, Status = status, Percentage = -1 });
+            }
+            return rows;
         }
 
         private void ClearDetailsPanel()
@@ -2755,8 +2936,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 tb.Foreground = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
             }
+            LocalPipelineStatusSection.Visibility = Visibility.Visible;
             KindleVolumeList.ItemsSource = null;
             KindleVolumeSection.Visibility = Visibility.Collapsed;
+            ReadVolumeList.ItemsSource = null;
+            ReadVolumeSection.Visibility = Visibility.Collapsed;
         }
 
         private void SetDetailYesNo(System.Windows.Controls.TextBlock tb, bool value)
@@ -2796,6 +2980,40 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             catch { return ""; }
         }
 
+        private string ReadLanguageFromComicInfo(string mangaPath)
+        {
+            var volumes = Directory.GetDirectories(mangaPath, "* - Volume *");
+            foreach (var vol in volumes)
+            {
+                var lang = ParseLanguageFromComicInfo(Path.Combine(vol, "ComicInfo.xml"));
+                if (!string.IsNullOrEmpty(lang)) return lang;
+
+                foreach (var ch in Directory.GetDirectories(vol, "Capitulo *"))
+                {
+                    lang = ParseLanguageFromComicInfo(Path.Combine(ch, "ComicInfo.xml"));
+                    if (!string.IsNullOrEmpty(lang)) return lang;
+                }
+            }
+            return "";
+        }
+
+        private static string ParseLanguageFromComicInfo(string xmlPath)
+        {
+            try
+            {
+                if (!File.Exists(xmlPath)) return "";
+                return XDocument.Load(xmlPath).Root?.Element("LanguageISO")?.Value ?? "";
+            }
+            catch { return ""; }
+        }
+
+        private static string LanguageBadge(string? language) => language?.ToUpperInvariant() switch
+        {
+            "PT-BR" => "PT-BR",
+            "EN-US" => "EN-US",
+            _ => "",
+        };
+
         private void MangaList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
             if (MangaList.SelectedItem is MangaItem selected)
@@ -2807,6 +3025,18 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     ClearDetailsPanel();
                     DetailMangaName.Text = selected.Name;
                     DetailAuthor.Text = "MOBI file";
+                    _watcher?.Dispose();
+                }
+                else if (selected.IsRemote)
+                {
+                    ResetButtonStates();
+                    BtnFetchAuthor.IsEnabled = false;
+                    BtnOrganize.IsEnabled = false;
+                    BtnRead.IsEnabled = true;
+                    BtnDownload.IsEnabled = true;
+                    ClearDetailsPanel();
+                    DetailMangaName.Text = selected.Name;
+                    DetailAuthor.Text = $"{selected.RemoteVolumeCount} volume(s) on AnimeUnited";
                     _watcher?.Dispose();
                 }
                 else
@@ -2829,9 +3059,16 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         private void MangaList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
             => BtnRead_Click(sender, e);
 
-        private void BtnRead_Click(object sender, RoutedEventArgs e)
+        private async void BtnRead_Click(object sender, RoutedEventArgs e)
         {
             if (MangaList.SelectedItem is not MangaItem item) return;
+
+            if (item.IsRemote)
+            {
+                bool downloaded = await DownloadMangaAsync(item, volumeFilter: null);
+                if (!downloaded || MangaList.SelectedItem is not MangaItem refreshed) return;
+                item = refreshed;
+            }
 
             ReaderWindow reader;
 
@@ -2880,6 +3117,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnFetchAuthor.IsEnabled = true;
             BtnOrganize.IsEnabled = true;
             BtnRead.IsEnabled = false;
+            BtnDownload.IsEnabled = false;
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
             BtnResize.IsEnabled = false;
@@ -2887,6 +3125,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnOpenKCC.IsEnabled = false;
             BtnSendToKindle.IsEnabled = false;
             BtnRemoveFromKindle.IsEnabled = false;
+            BtnUpload.IsEnabled = false;
         }
 
 
@@ -2988,7 +3227,328 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
         }
 
-        private void Refresh_Click(object sender, RoutedEventArgs e) => LoadMangas();
+        private void Refresh_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isAnimeUnitedMode) LoadRemoteMangas();
+            else LoadMangas();
+        }
+
+        private static System.Windows.Media.Brush HexBrush(string hex) =>
+            (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(hex)!;
+
+        private void SourceLocal_Click(object sender, RoutedEventArgs e)
+        {
+            _isAnimeUnitedMode = false;
+            BtnSourceLocal.Background = HexBrush("#E85D04");
+            BtnSourceAnimeUnited.Background = HexBrush("#2D2D2D");
+            DownloadColumn.Width = new GridLength(0);
+            BtnDownload.Visibility = Visibility.Collapsed;
+            FolderRow.Visibility = Visibility.Visible;
+            LocalOnlyActionsPanel.Visibility = Visibility.Visible;
+            LoadMangas();
+        }
+
+        private void SourceAnimeUnited_Click(object sender, RoutedEventArgs e)
+        {
+            _isAnimeUnitedMode = true;
+            BtnSourceAnimeUnited.Background = HexBrush("#E85D04");
+            BtnSourceLocal.Background = HexBrush("#2D2D2D");
+            DownloadColumn.Width = new GridLength(1, System.Windows.GridUnitType.Star);
+            BtnDownload.Visibility = Visibility.Visible;
+            FolderRow.Visibility = Visibility.Collapsed;
+            LocalOnlyActionsPanel.Visibility = Visibility.Collapsed;
+            LoadRemoteMangas();
+        }
+
+        private void SelectMangaByName(string name)
+        {
+            foreach (var obj in MangaList.Items)
+            {
+                if (obj is MangaItem mi && mi.Name == name)
+                {
+                    MangaList.SelectedItem = mi;
+                    return;
+                }
+            }
+        }
+
+        // ==============================
+        // ☁ ANIMEUNITED
+        // ==============================
+        private async void LoadRemoteMangas()
+        {
+            MangaList.Items.Clear();
+
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            string apiKey = Properties.Settings.Default.AnimeUnitedApiKey;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                Log("Configure the AnimeUnited API URL in the settings panel (right side) first.");
+                return;
+            }
+
+            Log("Loading AnimeUnited catalog...");
+            try
+            {
+                var client = new AnimeUnitedClient(apiUrl, apiKey,
+                    Properties.Settings.Default.AnimeUnitedUserEmail);
+                var mangas = await client.GetMangasAsync();
+
+                var tasks = new List<Task>();
+                foreach (var m in mangas.OrderBy(x => x.Name))
+                {
+                    bool alreadyLocal = Directory.Exists(Path.Combine(basePath, m.Name));
+                    var item = new MangaItem
+                    {
+                        Name = m.Name,
+                        IsRemote = !alreadyLocal,
+                        RemoteVolumeCount = m.VolumeCount,
+                        RemoteCoverUrl = m.CoverUrl,
+                        StatusColor = "#1a1a2a",
+                        StatusForeground = "#00A8E1",
+                        StatusWeight = "Normal",
+                        StatusTip = alreadyLocal ? "Already downloaded" : $"{m.VolumeCount} volume(s) on AnimeUnited",
+                        Chk7 = alreadyLocal ? "" : "☁",
+                        ChkLanguage = LanguageBadge(m.Language),
+                    };
+                    MangaList.Items.Add(item);
+                    if (!string.IsNullOrEmpty(m.CoverUrl))
+                        tasks.Add(LoadRemoteCoverAsync(item, m.CoverUrl!));
+                }
+
+                Log($"{mangas.Count} manga(s) found on AnimeUnited. Loading covers...");
+                _ = Task.WhenAll(tasks).ContinueWith(_ =>
+                    Dispatcher.Invoke(() => Log("Covers loaded.")));
+            }
+            catch (Exception ex)
+            {
+                Log($"AnimeUnited error: {ex.Message}");
+            }
+        }
+
+        private async Task LoadRemoteCoverAsync(MangaItem item, string coverUrl)
+        {
+            var bytes = await DownloadImageBytes(coverUrl);
+            if (bytes != null)
+                item.CoverImage = LoadImageFromBytes(bytes);
+        }
+
+        private async void BtnDownload_Click(object sender, RoutedEventArgs e)
+        {
+            if (MangaList.SelectedItem is not MangaItem item || !item.IsRemote) return;
+
+            HashSet<int>? volumeFilter = null;
+            if (ChkSendRange.IsChecked == true)
+            {
+                volumeFilter = ParseVolumeSelection(VolumeRangeBox.Text);
+                if (volumeFilter.Count == 0)
+                {
+                    Log("Please enter a valid volume range (e.g. 1,2,3 or 1-6).");
+                    return;
+                }
+            }
+
+            await DownloadMangaAsync(item, volumeFilter);
+        }
+
+        private async Task<bool> DownloadMangaAsync(MangaItem item, HashSet<int>? volumeFilter)
+        {
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            string apiKey = Properties.Settings.Default.AnimeUnitedApiKey;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                Log("Configure the AnimeUnited API URL in the settings panel (right side) first.");
+                return false;
+            }
+
+            var client = new AnimeUnitedClient(apiUrl, apiKey,
+                Properties.Settings.Default.AnimeUnitedUserEmail);
+            var token = StartOperation();
+            try
+            {
+                var volumes = await client.GetVolumesAsync(item.Name);
+
+                if (volumeFilter != null)
+                {
+                    volumes = volumes.Where(v =>
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(v.Name, @"Volume (\d+)");
+                        return match.Success && volumeFilter.Contains(int.Parse(match.Groups[1].Value));
+                    }).ToList();
+                }
+
+                if (volumes.Count == 0)
+                {
+                    Log("No matching volumes found to download.");
+                    return false;
+                }
+
+                string destFolder = Path.Combine(basePath, item.Name);
+                int done = 0;
+                foreach (var vol in volumes)
+                {
+                    if (token.IsCancellationRequested) break;
+
+                    Log($"Downloading {item.Name} — {vol.Name}...");
+                    var progress = new Progress<double>(p => ProgressBar.Value = p);
+                    await client.DownloadVolumeAsync(item.Name, vol.Name, destFolder, progress);
+                    done++;
+                    ProgressText.Text = $"{done}/{volumes.Count}";
+                }
+
+                Log($"Downloaded {done} volume(s) of {item.Name}.");
+
+                SourceLocal_Click(this, new RoutedEventArgs());
+                SelectMangaByName(item.Name);
+                return done > 0;
+            }
+            catch (Exception ex)
+            {
+                Log($"AnimeUnited download error: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                EndOperation();
+            }
+        }
+
+        private async void BtnUpload_Click(object sender, RoutedEventArgs e)
+        {
+            if (MangaList.SelectedItem is not MangaItem item || item.IsRemote || item.IsMobiOnly) return;
+
+            string mangaPath = Path.Combine(basePath, item.Name);
+            var volumeDirs = Directory.Exists(mangaPath)
+                ? Directory.GetDirectories(mangaPath, "* - Volume *").OrderBy(v => v).ToArray()
+                : Array.Empty<string>();
+
+            if (volumeDirs.Length == 0)
+            {
+                Log("No volume folders found to upload.");
+                return;
+            }
+
+            if (ChkSendRange.IsChecked == true)
+            {
+                var volumeFilter = ParseVolumeSelection(VolumeRangeBox.Text);
+                if (volumeFilter.Count == 0)
+                {
+                    Log("Please enter a valid volume range (e.g. 1,2,3 or 1-6).");
+                    return;
+                }
+
+                volumeDirs = volumeDirs.Where(v =>
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(v), @"Volume (\d+)");
+                    return match.Success && volumeFilter.Contains(int.Parse(match.Groups[1].Value));
+                }).ToArray();
+            }
+
+            if (volumeDirs.Length == 0)
+            {
+                Log("No matching volumes found to upload.");
+                return;
+            }
+
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            string apiKey = Properties.Settings.Default.AnimeUnitedApiKey;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                Log("Configure the AnimeUnited API URL in the settings panel (right side) first.");
+                return;
+            }
+
+            // Envia um zip por capítulo (Content-Type: application/octet-stream — "application/zip"
+            // é o que o WAF do servidor bloqueia; o conteúdo continua sendo um zip normal).
+            var chapters = new List<(string VolumeName, string ChapterName, string ChapterDir)>();
+            foreach (var volDir in volumeDirs)
+            {
+                string volumeName = Path.GetFileName(volDir);
+                foreach (var chDir in Directory.GetDirectories(volDir, "Capitulo *").OrderBy(c => c))
+                    chapters.Add((volumeName, Path.GetFileName(chDir), chDir));
+            }
+
+            if (chapters.Count == 0)
+            {
+                Log("No chapter folders found to upload.");
+                return;
+            }
+
+            var client = new AnimeUnitedClient(apiUrl, apiKey,
+                Properties.Settings.Default.AnimeUnitedUserEmail);
+            var token = StartOperation();
+            try
+            {
+                int done = 0;
+                int failed = 0;
+                foreach (var (volumeName, chapterName, chapterDir) in chapters)
+                {
+                    if (token.IsCancellationRequested) break;
+
+                    Log($"Uploading {item.Name} — {volumeName} — {chapterName}...");
+
+                    try
+                    {
+                        await client.UploadChapterAsync(item.Name, volumeName, chapterName, chapterDir);
+                        done++;
+                    }
+                    catch (Exception chapterEx)
+                    {
+                        failed++;
+                        Log($"  FAILED: {volumeName} — {chapterName} — {chapterEx.Message}");
+                    }
+
+                    // Progresso geral (capítulos concluídos), não por byte de um capítulo só —
+                    // o relatório 0%/100% por request fazia a barra "resetar" a cada capítulo.
+                    ProgressBar.Value = (done + failed) * 100.0 / chapters.Count;
+                    ProgressText.Text = $"{done + failed}/{chapters.Count}";
+                }
+
+                foreach (var volDir in volumeDirs)
+                {
+                    string volumeName = Path.GetFileName(volDir);
+                    string localVolumeComicInfo = Path.Combine(volDir, "ComicInfo.xml");
+                    if (!File.Exists(localVolumeComicInfo)) continue;
+
+                    try
+                    {
+                        await client.UploadVolumeComicInfoAsync(item.Name, volumeName, localVolumeComicInfo);
+                        Log($"Uploaded ComicInfo.xml for {volumeName}.");
+                    }
+                    catch (Exception ciEx)
+                    {
+                        Log($"  FAILED to upload ComicInfo.xml for {volumeName} — {ciEx.Message}");
+                    }
+                }
+
+                string localCover = Path.Combine(mangaPath, "cover.jpg");
+                if (File.Exists(localCover))
+                {
+                    try
+                    {
+                        await client.UploadCoverAsync(item.Name, localCover);
+                        Log("Uploaded cover.jpg to AnimeUnited.");
+                    }
+                    catch (Exception coverEx)
+                    {
+                        Log($"  FAILED to upload cover.jpg — {coverEx.Message}");
+                    }
+                }
+
+                Log(failed == 0
+                    ? $"Uploaded {done} chapter(s) of {item.Name} to AnimeUnited."
+                    : $"Uploaded {done} chapter(s), {failed} failed, of {item.Name} to AnimeUnited.");
+                LoadMangas();
+            }
+            catch (Exception ex)
+            {
+                Log($"AnimeUnited upload error: {ex.Message}");
+            }
+            finally
+            {
+                EndOperation();
+            }
+        }
 
         private void Log(string msg)
         {

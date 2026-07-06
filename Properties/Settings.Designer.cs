@@ -82,5 +82,29 @@ namespace MangaManager.Properties {
             get { return ((string)(this["KindleEmail"])); }
             set { this["KindleEmail"] = value; }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("https://animeunited.com.br/API/MangaManager")]
+        public string AnimeUnitedApiUrl {
+            get { return ((string)(this["AnimeUnitedApiUrl"])); }
+            set { this["AnimeUnitedApiUrl"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("TROQUE-ESTA-CHAVE-AQUI")]
+        public string AnimeUnitedApiKey {
+            get { return ((string)(this["AnimeUnitedApiKey"])); }
+            set { this["AnimeUnitedApiKey"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string AnimeUnitedUserEmail {
+            get { return ((string)(this["AnimeUnitedUserEmail"])); }
+            set { this["AnimeUnitedUserEmail"] = value; }
+        }
     }
 }

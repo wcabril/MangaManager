@@ -20,5 +20,14 @@
     <Setting Name="KindleEmail" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
+    <Setting Name="AnimeUnitedApiUrl" Type="System.String" Scope="User">
+      <Value Profile="(Default)">https://animeunited.com.br/API/MangaManager</Value>
+    </Setting>
+    <Setting Name="AnimeUnitedApiKey" Type="System.String" Scope="User">
+      <Value Profile="(Default)">TROQUE-ESTA-CHAVE-AQUI</Value>
+    </Setting>
+    <Setting Name="AnimeUnitedUserEmail" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
   </Settings>
 </SettingsFile>
