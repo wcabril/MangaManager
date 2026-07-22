@@ -2473,6 +2473,9 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             bool hasAuthor = !string.IsNullOrWhiteSpace(AuthorBox.Text);
             bool hasChapters = volumes.Length > 0 &&
                                volumes.Any(v => Directory.GetDirectories(v, "Capitulo *").Length > 0);
+            // Arquivos soltos (pdf/cbz/epub/mobi) sentados direto na pasta do volume, ainda sem
+            // capítulos extraídos — é exatamente o que o Extract processa e transforma em capítulos.
+            bool hasFilesInVolumes = volumes.Any(v => GetMangaFiles(v).Length > 0);
             bool hasImages = volumes.Any(v =>
                 Directory.GetDirectories(v, "Capitulo *").Any(ch =>
                     Directory.GetFiles(ch, "*.jpg").Length > 0 ||
@@ -2492,7 +2495,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnOrganize.IsEnabled = true;
             SetCheck(BtnOrganize, hasChapters);
 
-            BtnExtract.IsEnabled = hasChapters;
+            BtnExtract.IsEnabled = hasChapters || hasFilesInVolumes;
             SetCheck(BtnExtract, hasImages);
 
             BtnResize.IsEnabled = hasImages;
