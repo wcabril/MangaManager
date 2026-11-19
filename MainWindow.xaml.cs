@@ -703,7 +703,16 @@ namespace MangaManager
             while (right  > left   && ColIsBorder(right))  right--;
 
             var rect = new System.Drawing.Rectangle(left, top, right - left + 1, bottom - top + 1);
-            return (rect.Width <= 0 || rect.Height <= 0) ? bmp : bmp.Clone(rect, bmp.PixelFormat);
+
+            // Numa página em branco TODA linha é borda, então os laços acima andam até
+            // top == bottom e left == right: a sobra é 1×1 e a página desaparece. Só
+            // vale cortar o que ainda deixa a maior parte da página de pé.
+            bool degenerado = rect.Width  < bmp.Width  * 0.1f ||
+                              rect.Height < bmp.Height * 0.1f;
+
+            return (rect.Width <= 0 || rect.Height <= 0 || degenerado)
+                ? bmp
+                : bmp.Clone(rect, bmp.PixelFormat);
         }
 
         private System.Drawing.Bitmap ProcessForEInk(System.Drawing.Bitmap src)
