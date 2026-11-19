@@ -12,6 +12,7 @@ namespace MangaManager
     public record RemoteManga(string Name, int VolumeCount, string? CoverUrl, string? Language);
     public record RemoteVolume(string Name, long? SizeBytes);
     public record AccessInfo(string? Name, string AccessLevel, bool IsAdmin, bool HasAccess);
+    public record RemoteUser(int Id, string Name, string Email, string AccessLevel, string? CreatedAt);
 
     public class AnimeUnitedClient
     {
@@ -56,10 +57,31 @@ namespace MangaManager
             return result;
         }
 
+        // GetStringAsync descarta o corpo da resposta quando o status é de erro; aqui o
+        // texto que o servidor mandou ({"error": "..."}) vira a mensagem da exceção.
+        private static async Task<string> GetJsonAsync(HttpClient client, string url)
+        {
+            using var resp = await client.GetAsync(url);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (resp.IsSuccessStatusCode) return body;
+
+            var detail = body;
+            try
+            {
+                using var errDoc = JsonDocument.Parse(body);
+                if (errDoc.RootElement.TryGetProperty("error", out var err))
+                    detail = err.GetString() ?? body;
+            }
+            catch (JsonException) { }
+
+            if (detail.Length > 300) detail = detail.Substring(0, 300) + "…";
+            throw new HttpRequestException($"{(int)resp.StatusCode} {resp.ReasonPhrase}: {detail}");
+        }
+
         public async Task<bool> CheckIsAdminAsync()
         {
             using var client = CreateClient();
-            var json = await client.GetStringAsync($"{_baseUrl}/api/access");
+            var json = await GetJsonAsync(client, $"{_baseUrl}/api/access");
             using var doc = JsonDocument.Parse(json);
             return doc.RootElement.TryGetProperty("isAdmin", out var isAdmin) && isAdmin.GetBoolean();
         }
@@ -67,7 +89,7 @@ namespace MangaManager
         public async Task<AccessInfo> CheckAccessAsync()
         {
             using var client = CreateClient();
-            var json = await client.GetStringAsync($"{_baseUrl}/api/access");
+            var json = await GetJsonAsync(client, $"{_baseUrl}/api/access");
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -77,6 +99,111 @@ namespace MangaManager
             var hasAccess = root.TryGetProperty("hasAccess", out var ha) && ha.GetBoolean();
             return new AccessInfo(name, accessLevel, isAdmin, hasAccess);
         }
+
+        // Apaga o mangá inteiro do servidor. Exige admin — o servidor confere o
+        // access_level do X-User-Email, a chave da API sozinha não autoriza.
+        //
+        // Vai como POST em .../delete, e não como DELETE: o servidor do AnimeUnited
+        // bloqueia o método DELETE para o site inteiro (403 em HTML, antes do PHP).
+        // Mesmo motivo pelo qual o upload não declara "application/zip".
+        public async Task<(int Files, long Bytes)> DeleteMangaAsync(string mangaName)
+        {
+            using var client = CreateClient();
+            var url = $"{_baseUrl}/api/mangas/{Uri.EscapeDataString(mangaName)}/delete";
+
+            var payload = new ByteArrayContent(System.Text.Encoding.ASCII.GetBytes("delete"));
+            payload.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+
+            using var resp = await client.PostAsync(url, payload);
+            var body = await resp.Content.ReadAsStringAsync();
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var detail = body;
+                try
+                {
+                    using var errDoc = JsonDocument.Parse(body);
+                    if (errDoc.RootElement.TryGetProperty("error", out var err))
+                        detail = err.GetString() ?? body;
+                }
+                catch (JsonException) { }
+                throw new HttpRequestException($"{(int)resp.StatusCode} {resp.ReasonPhrase}: {detail}");
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            int files = root.TryGetProperty("filesDeleted", out var fd) ? fd.GetInt32() : 0;
+            long bytes = root.TryGetProperty("bytesFreed", out var bf) ? bf.GetInt64() : 0;
+            return (files, bytes);
+        }
+
+        // ── Gerenciamento de apoiadores ──────────────────────────────────────
+        // Todas exigem admin no servidor: chave da API mais access_level do
+        // X-User-Email. Vão como POST porque o host bloqueia PUT e DELETE.
+
+        public async Task<List<RemoteUser>> GetUsersAsync()
+        {
+            using var client = CreateClient();
+            var json = await GetJsonAsync(client, $"{_baseUrl}/api/users");
+            using var doc = JsonDocument.Parse(json);
+
+            var result = new List<RemoteUser>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                result.Add(new RemoteUser(
+                    item.GetProperty("id").GetInt32(),
+                    item.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                    item.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    item.TryGetProperty("accessLevel", out var a) ? a.GetString() ?? "none" : "none",
+                    item.TryGetProperty("createdAt", out var c) ? c.GetString() : null));
+            }
+            return result;
+        }
+
+        private async Task PostJsonAsync(string url, object? corpo)
+        {
+            using var client = CreateClient();
+
+            HttpContent conteudo;
+            if (corpo == null)
+            {
+                // Corpo vazio faz o WAF do servidor recusar; um byte resolve.
+                conteudo = new ByteArrayContent(new byte[] { 0x20 });
+                conteudo.Headers.ContentType =
+                    new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            }
+            else
+            {
+                conteudo = new StringContent(JsonSerializer.Serialize(corpo),
+                    System.Text.Encoding.UTF8, "application/json");
+            }
+
+            using var resp = await client.PostAsync(url, conteudo);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (resp.IsSuccessStatusCode) return;
+
+            var detail = body;
+            try
+            {
+                using var errDoc = JsonDocument.Parse(body);
+                if (errDoc.RootElement.TryGetProperty("error", out var err))
+                    detail = err.GetString() ?? body;
+            }
+            catch (JsonException) { }
+            throw new HttpRequestException(detail);
+        }
+
+        public Task CreateUserAsync(string name, string email, string accessLevel) =>
+            PostJsonAsync($"{_baseUrl}/api/users",
+                          new { name, email, accessLevel });
+
+        public Task UpdateUserAsync(int id, string name, string email, string accessLevel) =>
+            PostJsonAsync($"{_baseUrl}/api/users/{id}",
+                          new { name, email, accessLevel });
+
+        public Task DeleteUserAsync(int id) =>
+            PostJsonAsync($"{_baseUrl}/api/users/{id}/delete", null);
 
         public async Task<List<RemoteVolume>> GetVolumesAsync(string mangaName)
         {

@@ -37,6 +37,18 @@ namespace MangaManager.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1600")]
+        public int CloudMaxPixels {
+            get {
+                return ((int)(this["CloudMaxPixels"]));
+            }
+            set {
+                this["CloudMaxPixels"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string KindleDevice {
             get {
@@ -85,7 +97,7 @@ namespace MangaManager.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("https://animeunited.com.br/API/MangaManager")]
+        [global::System.Configuration.DefaultSettingValueAttribute("https://mangas.animeunited.com.br")]
         public string AnimeUnitedApiUrl {
             get { return ((string)(this["AnimeUnitedApiUrl"])); }
             set { this["AnimeUnitedApiUrl"] = value; }

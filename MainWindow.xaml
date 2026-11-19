@@ -531,8 +531,9 @@
                               VerticalContentAlignment="Center" Padding="5,0" FontSize="11"/>
                 </Grid>
 
-                <!-- Process & Convert -->
-                <Button x:Name="BtnResize" Click="KCC_Click" Height="26" Margin="0,3,0,0">
+                <!-- Process for Kindle: redimensiona pelo perfil acima e aplica o tratamento de e-ink -->
+                <Button x:Name="BtnResize" Click="ProcessKindle_Click" Height="26" Margin="0,3,0,0"
+                        ToolTip="Prepara as páginas para o Kindle: tamanho do perfil selecionado, tons de cinza e ajuste de e-ink. Depois use o Generate mobi.">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Grid>
@@ -542,7 +543,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Rectangle Grid.Column="0" Fill="#A855F7"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
-                                    <TextBlock Text="⚙  Process &amp; Convert" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock Text="⚙  Process for Kindle" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>
@@ -571,6 +572,44 @@
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsPressed" Value="True">
                                     <Setter TargetName="Bd" Property="Background" Value="#922B21"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+                <!-- ☁ NUVEM: teto de resolução próprio + processamento próprio.
+                     Independente do bloco Kindle acima — escolha um destino por mangá. -->
+                <Grid Height="26" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="26"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Rectangle Grid.Column="0" Fill="#38BDF8"/>
+                    <ComboBox x:Name="CloudSizeCombo" Grid.Column="1"
+                              Background="#DDDDDD" BorderThickness="0"
+                              ToolTip="Tamanho máximo das páginas para a nuvem. Não afeta o perfil do Kindle."
+                              VerticalContentAlignment="Center" Padding="5,0" FontSize="11"/>
+                </Grid>
+
+                <!-- Process for Cloud: teto acima, cor preservada, sem tratamento de e-ink -->
+                <Button x:Name="BtnCloud" Click="ProcessCloud_Click" Height="26" Margin="0,3,0,0"
+                        ToolTip="Prepara as páginas para a nuvem: mantém as coloridas em cor, sem tratamento de e-ink. Depois use o Upload.">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="26"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#38BDF8"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                    <TextBlock Text="☁  Process for Cloud" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -658,6 +697,59 @@
                                 <Rectangle Grid.Column="0" Fill="#00A8E1"/>
                                 <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD" Opacity="{TemplateBinding Opacity}">
                                     <TextBlock Text="☁  Upload" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+                <!-- Apoiadores: quem tem acesso à nuvem. Só admin. -->
+                <Button x:Name="BtnUsuarios" Click="BtnUsuarios_Click" Height="26" Margin="0,3,0,0"
+                        Visibility="Collapsed"
+                        ToolTip="Gerenciar quem tem acesso a mangas.animeunited.com.br">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="26"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#00A8E1"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD">
+                                    <TextBlock Text="👥  Apoiadores" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#BBBBBB"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+                <!-- Apagar da nuvem: só admin, e só no modo AnimeUnited com um mangá remoto selecionado -->
+                <Button x:Name="BtnDeleteCloud" Click="BtnDeleteCloud_Click" Height="26" Margin="0,3,0,0"
+                        IsEnabled="False" Visibility="Collapsed"
+                        ToolTip="Apaga o mangá inteiro do servidor. Irreversível.">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="26"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#C0392B"/>
+                                <Border x:Name="Bd" Grid.Column="1" Background="#DDDDDD" Opacity="{TemplateBinding Opacity}">
+                                    <TextBlock Text="🗑  Delete from Cloud" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                             <ControlTemplate.Triggers>

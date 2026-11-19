@@ -15,6 +15,8 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using WinForms = System.Windows.Forms;
 using MessageBox = System.Windows.MessageBox;
 
@@ -40,6 +42,7 @@ namespace MangaManager
             InitializeComponent();
             ResetButtonStates();
             InitializeKccProfileCombo();
+            InitializeCloudSizeCombo();
 
             // Limpa KccPath salvo se não for o executável c2e (ex: apontava para KCC.exe antigo)
             var savedKcc = Properties.Settings.Default.KccPath;
@@ -227,17 +230,42 @@ namespace MangaManager
             };
         }
 
-        private string GetKccProfile() => KccProfileCombo.SelectedItem?.ToString() switch
+        // Teto de resolução do Process & Convert. Separado do perfil Kindle de propósito:
+        // o que sai daqui é o que vai para a nuvem, lido no celular e no PC.
+        private static readonly (string Label, int Pixels)[] CloudSizes =
         {
-            "Kindle Paperwhite 1/2/3 (KPW)"        => "KPW",
-            "Kindle Paperwhite 4/5 (KPW5)"         => "KPW5",
-            "Kindle Paperwhite 11th Gen (KPW5)"    => "KPW5",
-            "Kindle Oasis (KO)"                    => "KO",
-            "Kindle Scribe (KS)"                   => "KS",
-            "Kindle Basic 2022 (K11)"              => "K11",
-            _                                      => "KPW5",
+            ("Nuvem: 1200px (menor arquivo)", 1200),
+            ("Nuvem: 1600px (recomendado)",   1600),
+            ("Nuvem: 2000px",                 2000),
+            ("Nuvem: 2400px",                 2400),
+            ("Nuvem: tamanho original",          0),
         };
 
+        private void InitializeCloudSizeCombo()
+        {
+            CloudSizeCombo.ItemsSource = CloudSizes.Select(s => s.Label).ToArray();
+
+            int saved = Properties.Settings.Default.CloudMaxPixels;
+            int index = Array.FindIndex(CloudSizes, s => s.Pixels == saved);
+            CloudSizeCombo.SelectedIndex = index >= 0 ? index : 1; // default 1600
+
+            CloudSizeCombo.SelectionChanged += (s, e) =>
+            {
+                if (CloudSizeCombo.SelectedIndex >= 0)
+                {
+                    Properties.Settings.Default.CloudMaxPixels = CloudSizes[CloudSizeCombo.SelectedIndex].Pixels;
+                    Properties.Settings.Default.Save();
+                }
+            };
+        }
+
+        // 0 = sem limite (mantém o tamanho original da página).
+        private int GetCloudMaxPixels() =>
+            CloudSizeCombo.SelectedIndex >= 0 ? CloudSizes[CloudSizeCombo.SelectedIndex].Pixels
+                                              : Properties.Settings.Default.CloudMaxPixels;
+
+        // Resolução do aparelho, usada pelo Process for Kindle. O KCC é chamado com -n
+        // (--noprocessing), então quem dimensiona para o Kindle é o app, aqui.
         private (int W, int H) GetKindleDimensions() => KccProfileCombo.SelectedItem?.ToString() switch
         {
             "Kindle Paperwhite 1/2/3 (KPW)"        => (758,  1024),
@@ -247,6 +275,17 @@ namespace MangaManager
             "Kindle Scribe (KS)"                   => (1860, 2480),
             "Kindle Basic 2022 (K11)"              => (1072, 1448),
             _                                      => (1072, 1448),
+        };
+
+        private string GetKccProfile() => KccProfileCombo.SelectedItem?.ToString() switch
+        {
+            "Kindle Paperwhite 1/2/3 (KPW)"        => "KPW",
+            "Kindle Paperwhite 4/5 (KPW5)"         => "KPW5",
+            "Kindle Paperwhite 11th Gen (KPW5)"    => "KPW5",
+            "Kindle Oasis (KO)"                    => "KO",
+            "Kindle Scribe (KS)"                   => "KS",
+            "Kindle Basic 2022 (K11)"              => "K11",
+            _                                      => "KPW5",
         };
 
         // kcc_c2e_*.exe do GitHub releases — usado para conversão headless
@@ -312,19 +351,79 @@ namespace MangaManager
             return null;
         }
 
-        private async void KCC_Click(object sender, RoutedEventArgs e)
+        // Cada alvo grava na sua própria pasta, espelhando a árvore volume/capítulo.
+        // Antes a conversão era feita no lugar: o segundo alvo encontrava os .jpg do
+        // primeiro ("name already taken") e já não havia página original para converter.
+        private const string CloudFolderName  = "Cloud";
+        private const string KindleFolderName = "Kindle";
+
+        // Volumes de uma raiz. O padrão "* - Volume *" já exclui Cloud/, Kindle/,
+        // Converted/ e Originals/, que ficam lado a lado na pasta do mangá.
+        private static string[] GetVolumeDirs(string root) =>
+            Directory.Exists(root)
+                ? Directory.GetDirectories(root, "* - Volume *").OrderBy(v => v).ToArray()
+                : Array.Empty<string>();
+
+        // De onde o KCC/upload devem ler: a saída daquele alvo, quando o processamento
+        // já rodou; senão os volumes extraídos, como era antes.
+        private static string ResolveSourceRoot(string mangaPath, string outputFolder)
+        {
+            string candidate = Path.Combine(mangaPath, outputFolder);
+            return GetVolumeDirs(candidate).Length > 0 ? candidate : mangaPath;
+        }
+
+        // ComicInfo.xml acompanha as páginas: o KCC tira dele os metadados do MOBI e o
+        // upload manda o do volume para o servidor — ambos leem a pasta de saída.
+        private static int MirrorComicInfo(string sourceRoot, string outputRoot)
+        {
+            int copied = 0;
+            foreach (var vol in GetVolumeDirs(sourceRoot))
+                foreach (var xml in Directory.GetFiles(vol, "ComicInfo.xml", SearchOption.AllDirectories))
+                {
+                    string dest = Path.Combine(outputRoot, Path.GetRelativePath(sourceRoot, xml));
+                    Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                    File.Copy(xml, dest, overwrite: true);
+                    copied++;
+                }
+            return copied;
+        }
+
+        // ☁ Nuvem: teto próprio, cor preservada, sem tratamento de e-ink (lê-se em celular e PC).
+        private async void ProcessCloud_Click(object sender, RoutedEventArgs e)
+        {
+            int max = GetCloudMaxPixels();
+            await ProcessImages(max, max, applyEInk: false, outputFolder: CloudFolderName,
+                sizeLabel: max > 0 ? $"cloud, max {max}px" : "cloud, original size");
+        }
+
+        // ⚙ Kindle: tamanho do perfil selecionado + tratamento de e-ink. O KCC só empacota.
+        private async void ProcessKindle_Click(object sender, RoutedEventArgs e)
+        {
+            var (w, h) = GetKindleDimensions();
+            await ProcessImages(w, h, applyEInk: true, outputFolder: KindleFolderName,
+                sizeLabel: $"Kindle {GetKccProfile()}, {w}×{h}");
+        }
+
+        private async Task ProcessImages(int maxW, int maxH, bool applyEInk,
+                                         string outputFolder, string sizeLabel)
         {
             var path = GetSelectedPath();
             if (path == null) return;
 
-            var (targetW, targetH) = GetKindleDimensions();
-            string profile = GetKccProfile();
+            string outputRoot = Path.Combine(path, outputFolder);
 
-            var images = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
+            // Sempre a partir dos volumes extraídos — nunca da saída do outro alvo.
+            var images = GetVolumeDirs(path)
+                .SelectMany(v => Directory.GetFiles(v, "*.*", SearchOption.AllDirectories))
                 .Where(f => f.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
+                // A capa é colorida e serve o catálogo (GET /api/mangas/{name}/cover).
+                // Passá-la pelo tratamento de e-ink a deixaria cinza.
+                .Where(f => !Path.GetFileNameWithoutExtension(f)
+                                 .Equals("cover", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => f)
                 .ToArray();
 
             if (images.Length == 0)
@@ -333,44 +432,143 @@ namespace MangaManager
                 return;
             }
 
-            Log($"Resizing {images.Length} image(s) to {targetW}×{targetH} ({profile})...");
+            Log($"Processing {images.Length} image(s) — {sizeLabel}, JPEG q{ProcessJpegQuality}...");
+            Log($"  Output → {outputRoot}");
             BtnOpenKCC.IsEnabled = false;
+            BtnResize.IsEnabled = false;
+            BtnCloud.IsEnabled = false;
             var token = StartOperation();
 
             await Task.Run(() =>
             {
                 int total = images.Length;
-                int current = 0;
+                int current = 0, converted = 0, failed = 0, skipped = 0, colorPages = 0, kept = 0;
+                long bytesBefore = 0, bytesAfter = 0;
+
+                // Destinos já gravados NESTA passada. Rodar de novo sobrescreve a saída
+                // anterior; o conflito só existe entre duas origens do mesmo capítulo.
+                var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var img in images)
                 {
                     if (token.IsCancellationRequested) break;
-                    try
+
+                    string relative = Path.GetRelativePath(path, img);
+                    string dest     = Path.Combine(outputRoot, Path.ChangeExtension(relative, ".jpg"));
+                    // Quando o original é mantido como está, ele vai para a saída com a
+                    // extensão de origem — um .png renomeado para .jpg não abriria.
+                    string keepDest = Path.ChangeExtension(dest, Path.GetExtension(img));
+
+                    // Ex.: existe 001.png e 001.jpg no mesmo capítulo — são páginas
+                    // distintas que dariam o mesmo destino. A primeira fica; esta é pulada.
+                    if (!written.Add(dest))
                     {
-                        using var original = System.Drawing.Image.FromFile(img);
-                        using var cropped = CropBorders((System.Drawing.Bitmap)original);
-
-                        float ratio = Math.Min((float)targetW / cropped.Width,
-                                               (float)targetH / cropped.Height);
-                        int newW = (int)(cropped.Width  * ratio);
-                        int newH = (int)(cropped.Height * ratio);
-
-                        using var resized = new System.Drawing.Bitmap(newW, newH);
-                        using (var g = System.Drawing.Graphics.FromImage(resized))
-                        {
-                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                            g.DrawImage(cropped, 0, 0, newW, newH);
-                        }
-
-                        using var processed = ProcessForEInk(resized);
-
-                        var format = img.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
-                            ? System.Drawing.Imaging.ImageFormat.Png
-                            : System.Drawing.Imaging.ImageFormat.Jpeg;
-
-                        processed.Save(img, format);
+                        skipped++;
+                        Dispatcher.Invoke(() => Log($"  ⚠ skipped (name already taken): {Path.GetFileName(img)}"));
                     }
-                    catch { /* skip broken image */ }
+                    else
+                    {
+                        try
+                        {
+                            long sizeBefore = new FileInfo(img).Length;
+                            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+                            // Copia para a memória e solta o arquivo: Image.FromFile mantém o
+                            // handle aberto, e gravar no mesmo caminho falharia com erro do GDI+.
+                            System.Drawing.Bitmap original;
+                            using (var fs = File.OpenRead(img))
+                            using (var loaded = System.Drawing.Image.FromStream(fs))
+                                original = new System.Drawing.Bitmap(loaded);
+
+                            using (original)
+                            using (var cropped = CropBorders(original))
+                            {
+                                // Nenhum lado passa do teto, e nunca amplia: página menor que o
+                                // teto já está no limite do detalhe que o scan tem — ampliar só
+                                // engorda o arquivo e borra. maxW <= 0 = manter original.
+                                float ratio = maxW <= 0 ? 1f
+                                    : Math.Min(1f, Math.Min((float)maxW / cropped.Width,
+                                                            (float)maxH / cropped.Height));
+                                int newW = Math.Max(1, (int)(cropped.Width  * ratio));
+                                int newH = Math.Max(1, (int)(cropped.Height * ratio));
+
+                                using var resized = new System.Drawing.Bitmap(newW, newH);
+                                using (var g = System.Drawing.Graphics.FromImage(resized))
+                                {
+                                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                                    g.DrawImage(cropped, 0, 0, newW, newH);
+                                }
+
+                                // Grava num temporário para poder comparar antes de
+                                // substituir: quando a origem já é um JPEG, gravar direto
+                                // no destino destrói o original e não há como voltar atrás.
+                                string temp = dest + ".tmp";
+
+                                if (applyEInk)
+                                {
+                                    // Kindle: tela de e-ink em tons de cinza — gama e sharpen
+                                    // valem para todas as páginas, inclusive as coloridas.
+                                    using var processed = ProcessForEInk(resized);
+                                    SaveJpeg(processed, temp, ProcessJpegQuality, grayscale: true);
+                                }
+                                else
+                                {
+                                    // Nuvem: lida em celular e PC. Página colorida fica colorida;
+                                    // a P&B vira JPEG de 1 canal só para economizar espaço.
+                                    bool color = HasColor(resized);
+                                    SaveJpeg(resized, temp, ProcessJpegQuality, grayscale: !color);
+                                    if (color) colorPages++;
+                                }
+
+                                // Rede de proteção: se nada foi redimensionado e o arquivo
+                                // regravado ficou MAIOR, a origem já estava mais comprimida
+                                // que o nosso alvo. Reescrever só perderia qualidade e
+                                // ocuparia mais espaço — o original fica.
+                                long tamNovo = new FileInfo(temp).Length;
+                                bool semRedimensionar = ratio >= 1f;
+
+                                if (semRedimensionar && tamNovo >= sizeBefore)
+                                {
+                                    File.Delete(temp);
+                                    // A saída precisa da página mesmo assim: copia o
+                                    // original como está, sem reencodar.
+                                    File.Copy(img, keepDest, overwrite: true);
+                                    if (!keepDest.Equals(dest, StringComparison.OrdinalIgnoreCase) &&
+                                        File.Exists(dest))
+                                        File.Delete(dest);   // sobra de uma passada anterior
+                                    kept++;
+                                    bytesBefore += sizeBefore;
+                                    bytesAfter  += sizeBefore;
+                                    current++;
+                                    Dispatcher.Invoke(() =>
+                                    {
+                                        ProgressBar.Value = (double)current / total * 100;
+                                        ProgressText.Text = $"{current} / {total}";
+                                    });
+                                    continue;
+                                }
+
+                                if (File.Exists(dest)) File.Delete(dest);
+                                File.Move(temp, dest);
+                                // O original fica intacto na pasta do volume — é a origem
+                                // do outro alvo. Só sai a sobra de uma passada anterior
+                                // que tinha mantido esta página na extensão de origem.
+                                if (!keepDest.Equals(dest, StringComparison.OrdinalIgnoreCase) &&
+                                    File.Exists(keepDest))
+                                    File.Delete(keepDest);
+
+                                bytesBefore += sizeBefore;
+                                bytesAfter  += tamNovo;
+                                converted++;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            if (failed <= 5)
+                                Dispatcher.Invoke(() => Log($"  ⚠ {Path.GetFileName(img)}: {ex.Message}"));
+                        }
+                    }
 
                     current++;
                     Dispatcher.Invoke(() =>
@@ -380,14 +578,91 @@ namespace MangaManager
                     });
                 }
 
+                int comicInfos = MirrorComicInfo(path, outputRoot);
+
                 Dispatcher.Invoke(() =>
                 {
-                    Log($"✓ Resize complete. {total} image(s) resized for {profile}.");
+                    Log(applyEInk
+                        ? $"✓ Processed {converted} image(s) — {sizeLabel}, grayscale for e-ink."
+                        : $"✓ Processed {converted} image(s) — {sizeLabel} " +
+                          $"({colorPages} in color, {converted - colorPages} grayscale).");
+                    if (bytesBefore > 0)
+                    {
+                        // Antes isto sempre dizia "smaller", mesmo quando o volume
+                        // crescia — e foi assim que o problema passou despercebido.
+                        double variacao = (1 - (double)bytesAfter / bytesBefore) * 100;
+                        string veredito = variacao >= 0
+                            ? $"{variacao:N0}% smaller"
+                            : $"{-variacao:N0}% LARGER";
+                        Log($"  {bytesBefore / 1024.0 / 1024.0:N1} MB → {bytesAfter / 1024.0 / 1024.0:N1} MB ({veredito})");
+                    }
+                    if (kept       > 0) Log($"  {kept} kept as-is (already smaller than re-encoding).");
+                    if (skipped    > 0) Log($"  {skipped} skipped (two pages with the same name in one chapter).");
+                    if (comicInfos > 0) Log($"  {comicInfos} ComicInfo.xml copied to /{outputFolder}.");
+                    if (failed  > 0) Log($"  ⚠ {failed} failed.");
+
                     BtnOpenKCC.IsEnabled = true;
+                    BtnResize.IsEnabled = true;
+                    BtnCloud.IsEnabled = true;
                     EndOperation();
                     RefreshSelectedStatus();
                 });
             });
+        }
+
+        // Qualidade do JPEG gravado pelo processamento.
+        //
+        // NÃO USE 75. Medido numa página de 1125x1600 com o JpegBitmapEncoder:
+        //     q50 143 KB · q60 156 KB · q70 176 KB · q75 270 KB · q80 212 KB · q85 235 KB
+        // O 75 sai MAIOR que o 80 e que o 85. É o valor padrão da classe, e ao
+        // recebê-lo explicitamente o encoder do WPF toma outro caminho interno.
+        // Era o que fazia o passo engordar os volumes em vez de reduzi-los.
+        private const int ProcessJpegQuality = 70;
+
+        // Uma página é "colorida" se uma fração relevante dos pixels amostrados tiver canais
+        // realmente diferentes entre si. A tolerância alta evita que ruído de JPEG num scan
+        // P&B (que sai levemente colorido) faça a página inteira ser tratada como colorida.
+        private static bool HasColor(System.Drawing.Bitmap bmp,
+            int channelTolerance = 24, float minColoredRatio = 0.005f)
+        {
+            int step = Math.Max(1, Math.Min(bmp.Width, bmp.Height) / 128);
+            int sampled = 0, colored = 0;
+
+            for (int y = 0; y < bmp.Height; y += step)
+                for (int x = 0; x < bmp.Width; x += step)
+                {
+                    var c = bmp.GetPixel(x, y);
+                    int spread = Math.Max(Math.Abs(c.R - c.G),
+                                 Math.Max(Math.Abs(c.G - c.B), Math.Abs(c.R - c.B)));
+                    if (spread > channelTolerance) colored++;
+                    sampled++;
+                }
+
+            return sampled > 0 && (float)colored / sampled >= minColoredRatio;
+        }
+
+        // Grava JPEG. Páginas P&B saem com um canal só (Gray8) — depois do ProcessForEInk
+        // guardar três canais idênticos é desperdício, e o encoder do WPF aceita Gray8
+        // direto, coisa que o System.Drawing não faz.
+        private static void SaveJpeg(System.Drawing.Bitmap bmp, string destPath, int quality,
+                                     bool grayscale)
+        {
+            BitmapSource source;
+            using (var ms = new MemoryStream())
+            {
+                bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
+                ms.Position = 0;
+                source = BitmapFrame.Create(ms, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            }
+
+            if (grayscale)
+                source = new FormatConvertedBitmap(source, PixelFormats.Gray8, null, 0);
+
+            var encoder = new JpegBitmapEncoder { QualityLevel = quality };
+            encoder.Frames.Add(BitmapFrame.Create(source));
+
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write);
+            encoder.Save(fs);
         }
 
         // ==============================
@@ -539,7 +814,10 @@ namespace MangaManager
                 Log($"✓ kcc_c2e saved: {kccExe}");
             }
 
-            var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
+            // Empacota as páginas tratadas para e-ink, se o passo Kindle já rodou;
+            // senão os volumes extraídos, como era antes.
+            string sourceRoot = ResolveSourceRoot(path, KindleFolderName);
+            var volumes = GetVolumeDirs(sourceRoot);
             if (volumes.Length == 0)
             {
                 Log("No volume folders found.");
@@ -559,6 +837,9 @@ namespace MangaManager
 
             Log($"✓ kcc_c2e: {Path.GetFileName(kccExe)}");
             Log($"▶ Sending {volumes.Length} volume(s) to KCC ({profile})...");
+            Log(sourceRoot == path
+                ? "  Source → extracted volumes (Kindle processing not run yet)"
+                : $"  Source → /{KindleFolderName}");
             Log($"  Output → {convertedFolder}");
             Log($"  CMD: {args}");
 
@@ -713,7 +994,12 @@ namespace MangaManager
             public bool IsMobiOnly => !string.IsNullOrEmpty(MobiFilePath);
 
             // AnimeUnited: item veio do catálogo remoto e ainda não foi baixado
+            // IsRemote = "está no catálogo e eu ainda NÃO baixei" — controla o botão Download.
+            // IsOnCloud = "existe no servidor", independente de eu ter a cópia local. É este
+            // que vale para apagar da nuvem: quase todo mangá do catálogo também está no disco
+            // do admin, e nesse caso IsRemote é false.
             public bool IsRemote { get; set; }
+            public bool IsOnCloud { get; set; }
             public int RemoteVolumeCount { get; set; }
             public string? RemoteCoverUrl { get; set; }
         }
@@ -1085,6 +1371,23 @@ namespace MangaManager
             try
             {
                 using var client = new HttpClient();
+
+                // As capas do AnimeUnited deixaram de ser públicas. Sem a chave, o
+                // servidor responde 401 e o catálogo fica sem imagem. Só mandamos os
+                // cabeçalhos para o nosso servidor — este método também busca capas
+                // do AniList, e credencial nossa não tem o que fazer lá.
+                var apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+                if (!string.IsNullOrWhiteSpace(apiUrl) &&
+                    url.StartsWith(apiUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                {
+                    var apiKey = Properties.Settings.Default.AnimeUnitedApiKey;
+                    var email  = Properties.Settings.Default.AnimeUnitedUserEmail;
+                    if (!string.IsNullOrEmpty(apiKey))
+                        client.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+                    if (!string.IsNullOrEmpty(email))
+                        client.DefaultRequestHeaders.Add("X-User-Email", email);
+                }
+
                 return await client.GetByteArrayAsync(url);
             }
             catch { return null; }
@@ -1281,6 +1584,7 @@ namespace MangaManager
             client.DefaultRequestHeaders.Add("User-Agent", "MangaManager/1.0");
 
             var map = new Dictionary<string, string>();
+            int semVolume = 0;   // capítulos que o MangaDex tem, mas sem volume definido
 
             try
             {
@@ -1322,9 +1626,16 @@ namespace MangaManager
                             ? chProp.GetString() ?? "" : "";
 
                         var volNum = attrs.TryGetProperty("volume", out var vProp) && vProp.ValueKind == JsonValueKind.String
-                            ? vProp.GetString() ?? "0" : "0";
+                            ? vProp.GetString() ?? "" : "";
 
-                        if (!string.IsNullOrEmpty(chNum) && !map.ContainsKey(chNum))
+                        // Capítulo sem volume no MangaDex (campo null) NÃO entra no mapa.
+                        // Antes virava a string "0", e lá na organização "0" significa
+                        // "capítulo especial" — então toda série sem volume preenchido
+                        // tinha todos os capítulos despejados no último volume, com o log
+                        // alegando que estavam "mapeados". Ficando de fora, o fluxo cai no
+                        // fallback que pergunta quantos capítulos por volume.
+                        if (string.IsNullOrEmpty(volNum) || volNum == "0") semVolume++;
+                        else if (!string.IsNullOrEmpty(chNum) && !map.ContainsKey(chNum))
                             map[chNum] = volNum;
                     }
 
@@ -1335,7 +1646,9 @@ namespace MangaManager
                     if (offset >= total || count == 0) break;
                 }
 
-                Log($"MangaDex: {map.Count} chapter(s) mapped.");
+                Log(semVolume > 0
+                    ? $"MangaDex: {map.Count} chapter(s) with volume info ({semVolume} without)."
+                    : $"MangaDex: {map.Count} chapter(s) mapped.");
             }
             catch (Exception ex)
             {
@@ -1445,12 +1758,11 @@ namespace MangaManager
         private Dictionary<string, string> BuildManualMap(string[] cbzFiles, int chaptersPerVolume)
         {
             var map = new Dictionary<string, string>();
-            int vol = 1;
-            int count = 0;
 
-            foreach (var cbz in cbzFiles)
+            // Extrai o número do capítulo de cada arquivo.
+            static (string Texto, double Valor)? NumeroDoCapitulo(string caminho)
             {
-                string fileName = Path.GetFileNameWithoutExtension(cbz);
+                string fileName = Path.GetFileNameWithoutExtension(caminho);
                 var match = System.Text.RegularExpressions.Regex.Match(
                     fileName,
                     @"(?:cap[ií]tulo|capitulo|cap\.?|chapter|ch\.?)\s*(\d+(?:\.\d+)?)",
@@ -1459,12 +1771,38 @@ namespace MangaManager
                 if (!match.Success)
                     match = System.Text.RegularExpressions.Regex.Match(fileName, @"(\d+(?:\.\d+)?)");
 
-                if (!match.Success) continue;
+                if (!match.Success) return null;
 
                 string chNum = match.Groups[1].Value.TrimStart('0');
                 if (string.IsNullOrEmpty(chNum)) chNum = "0";
 
-                map[chNum] = vol.ToString();
+                double valor = double.TryParse(chNum, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out double v) ? v : double.MaxValue;
+
+                return (chNum, valor);
+            }
+
+            // Ordena pelo NÚMERO do capítulo antes de distribuir.
+            //
+            // A ordem que chega aqui é alfabética — Cap_1, Cap_10, Cap_11, ..., Cap_19,
+            // Cap_2 — e distribuir nessa sequência colocava o capítulo 2 no volume 3 e o
+            // capítulo 9 no volume 15, enquanto o 10 ao 14 iam para o volume 1. Capítulo
+            // 8.5 entra entre o 8 e o 9, que é onde ele pertence na leitura.
+            var ordenados = cbzFiles
+                .Select(f => NumeroDoCapitulo(f))
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
+                .OrderBy(x => x.Valor)
+                .ToList();
+
+            int vol = 1;
+            int count = 0;
+
+            foreach (var (texto, _) in ordenados)
+            {
+                if (map.ContainsKey(texto)) continue;   // duplicata não consome vaga
+
+                map[texto] = vol.ToString();
                 count++;
 
                 if (count >= chaptersPerVolume)
@@ -1532,13 +1870,31 @@ namespace MangaManager
                 }
 
                 // Se o mapa não cobriu todos os arquivos, pergunta sobre fallback manual para os restantes
-                if (volumeMap.Count > 0 && volumeMap.Count < cbzFiles.Length)
+                // Quantos dos MEUS arquivos o mapa realmente cobre.
+                //
+                // Antes isto comparava volumeMap.Count com a quantidade de arquivos, o que
+                // é a pergunta errada: o mapa traz a série inteira da fonte, inclusive
+                // capítulos que você não tem. Numa série com 108 capítulos mapeados e 90
+                // arquivos, a conta dizia "cobertura total" — mas os mapeados eram os
+                // capítulos 100+, e quase nenhum dos 1 a 90 estava lá. Resultado: o app
+                // não perguntava nada e chutava sozinho.
+                int cobertos = cbzFiles.Count(f =>
                 {
-                    Log($"⚠ {volumeMap.Count} of {cbzFiles.Length} chapters mapped. Some chapters may be missing from the source.");
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        Path.GetFileNameWithoutExtension(f), @"(\d+(?:\.\d+)?)");
+                    if (!m.Success) return false;
+                    var ch = m.Groups[1].Value.TrimStart('0');
+                    if (string.IsNullOrEmpty(ch)) ch = "0";
+                    return volumeMap.ContainsKey(ch);
+                });
+
+                if (cobertos < cbzFiles.Length)
+                {
+                    Log($"⚠ {cobertos} of {cbzFiles.Length} of your chapters have volume info in the source.");
 
                     string input = Microsoft.VisualBasic.Interaction.InputBox(
-                        $"The source only mapped {volumeMap.Count} of {cbzFiles.Length} chapters.\n\n" +
-                        "For unmatched chapters, how many chapters per volume?\n(Leave empty to skip unmatched files)",
+                        $"Only {cobertos} of your {cbzFiles.Length} chapters have volume info in the source.\n\n" +
+                        "For the rest, how many chapters per volume?\n(Leave empty to skip unmatched files)",
                         "Partial Map — Manual Fallback",
                         "5");
 
@@ -1670,15 +2026,66 @@ namespace MangaManager
 
                         if (volNum == null || volNum == "0")
                         {
-                            // Coloca no último volume disponível
+                            // Sem volume no mapa: usa o do capítulo mapeado mais PRÓXIMO.
+                            //
+                            // O padrão antigo era o último volume, o que é o pior palpite
+                            // justamente nos casos comuns: numa série onde o MangaDex não
+                            // preencheu os capítulos 1 a 4, eles iam parar no fim da
+                            // coleção. Pelo vizinho, o capítulo 4 acompanha o 5, que é
+                            // quase sempre o volume certo.
+                            if (double.TryParse(chapterNum, System.Globalization.NumberStyles.Any,
+                                    System.Globalization.CultureInfo.InvariantCulture, out double alvoCap))
+                            {
+                                string? vizinho = null;
+                                double menorDist = double.MaxValue;
+
+                                foreach (var par in volumeMap)
+                                {
+                                    if (!double.TryParse(par.Key, System.Globalization.NumberStyles.Any,
+                                            System.Globalization.CultureInfo.InvariantCulture, out double c)) continue;
+                                    double dist = Math.Abs(c - alvoCap);
+                                    if (dist < menorDist) { menorDist = dist; vizinho = par.Value; }
+                                }
+
+                                // Só interpola em lacuna PEQUENA. Se o capítulo mapeado mais
+                                // próximo está a mais de 3 de distância, o palpite deixa de
+                                // ser interpolação e vira invenção: numa série cujo mapa só
+                                // cobre os capítulos 100+, isso amontoaria 44 capítulos num
+                                // volume só, com cara de resultado legítimo.
+                                if (vizinho != null && menorDist <= 3)
+                                {
+                                    volNum = vizinho;
+                                    Dispatcher.Invoke(() => Log($"  ↳ Ch {chapterNum} sem volume na fonte → volume {vizinho} (capítulo mais próximo, distância {menorDist:0.#})"));
+                                }
+                            }
+                        }
+
+                        if (volNum == null || volNum == "0")
+                        {
+                            // Coloca no último volume disponível.
+                            //
+                            // O número vem SÓ do trecho "Volume N" no fim do nome. Antes isto
+                            // juntava todos os dígitos da pasta, e um título com número — como
+                            // "2.5 Dimensional Seduction" — contaminava a conta: o "2" e o "5"
+                            // do título grudavam no "25" do volume e viravam "2525". Como a
+                            // pasta criada virava a última da lista, o erro se multiplicava a
+                            // cada capítulo especial até estourar o Int32.
+                            static int NumeroDoVolume(string caminho)
+                            {
+                                var m = System.Text.RegularExpressions.Regex.Match(
+                                    Path.GetFileName(caminho), @"Volume\s*(\d+)\s*$",
+                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                return m.Success && int.TryParse(m.Groups[1].Value, out int n) ? n : 0;
+                            }
+
+                            // Ordena pelo número, não pelo texto: "Volume 9" vem antes de "Volume 10".
                             var lastVol = Directory.GetDirectories(path, "* - Volume *")
-                                                   .OrderBy(x => x).LastOrDefault();
+                                                   .OrderBy(NumeroDoVolume).LastOrDefault();
                             if (lastVol != null)
                             {
-                                volNum = new string(Path.GetFileName(lastVol)
-                                    .Where(char.IsDigit).ToArray()).TrimStart('0');
-                                if (string.IsNullOrEmpty(volNum)) volNum = "1";
-                                Dispatcher.Invoke(() => Log($"⚠ Special chapter → last volume: {Path.GetFileName(cbz)}"));
+                                int n = NumeroDoVolume(lastVol);
+                                volNum = (n > 0 ? n : 1).ToString();
+                                Dispatcher.Invoke(() => Log($"⚠ Special chapter → last volume {volNum}: {Path.GetFileName(cbz)}"));
                             }
                             else
                             {
@@ -1689,17 +2096,40 @@ namespace MangaManager
                             }
                         }
 
-                        string volFolder = $"{title} - Volume {int.Parse(volNum):D2}";
+                        // int.TryParse em vez de Parse: um volNum inesperado derrubava a
+                        // organização inteira com "Value was either too large or too small
+                        // for an Int32", no meio do processamento e sem dizer qual arquivo.
+                        if (!int.TryParse(volNum, out int volNumero) || volNumero <= 0)
+                        {
+                            Dispatcher.Invoke(() => Log($"⚠ Volume inválido (\"{volNum}\") para {Path.GetFileName(cbz)} — ignorado."));
+                            unmatched++;
+                            current++;
+                            continue;
+                        }
+
+                        string volFolder = $"{title} - Volume {volNumero:D2}";
                         string volPath = Path.Combine(path, volFolder);
                         Directory.CreateDirectory(volPath);
 
+                        // Sempre 3 dígitos ANTES do ponto, decimal preservado depois:
+                        //   16 → "Capitulo 016"   ·   16.5 → "Capitulo 016.5"
+                        // Antes o decimal era preenchido até 6 caracteres e saía
+                        // "Capitulo 0016.5", com um dígito a mais que os demais — o que
+                        // quebra a ordenação por nome no leitor, no Explorer e no catálogo
+                        // da nuvem, colocando o 16.5 antes do 13.
                         string chFormatted;
                         if (!chMatch.Success)
+                        {
                             chFormatted = Path.GetFileNameWithoutExtension(cbz); // especial/extra
-                        else if (chapterNum.Contains('.'))
-                            chFormatted = $"Capitulo {chapterNum.PadLeft(6, '0')}";
+                        }
                         else
-                            chFormatted = $"Capitulo {int.Parse(chapterNum):D3}";
+                        {
+                            var partes = chapterNum.Split('.');
+                            string inteiro = int.TryParse(partes[0], out int pi) ? pi.ToString("D3") : partes[0].PadLeft(3, '0');
+                            chFormatted = partes.Length > 1
+                                ? $"Capitulo {inteiro}.{partes[1]}"
+                                : $"Capitulo {inteiro}";
+                        }
 
                         string chDest = Path.Combine(volPath, chFormatted);
                         Directory.CreateDirectory(chDest);
@@ -1737,8 +2167,27 @@ namespace MangaManager
                         });
                     }
 
+                    // O passo anterior cria uma pasta para CADA volume que o AniList
+                    // informa (25, nesta série), mas só se preenchem os que você tem
+                    // capítulos. As vazias não são inofensivas: aparecem no catálogo da
+                    // nuvem como volumes de 0 páginas e confundem a contagem.
+                    int vazias = 0;
+                    foreach (var dir in Directory.GetDirectories(path, "* - Volume *"))
+                    {
+                        try
+                        {
+                            if (Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Length == 0)
+                            {
+                                Directory.Delete(dir, recursive: true);
+                                vazias++;
+                            }
+                        }
+                        catch { /* pasta em uso: deixa quieta */ }
+                    }
+
                     Dispatcher.Invoke(() => {
                         Log($"Organization complete. {current - unmatched} ok, {unmatched} unmatched.");
+                        if (vazias > 0) Log($"  {vazias} empty volume folder(s) removed.");
                         EndOperation();
                         RefreshSelectedStatus();
                     });
@@ -1950,6 +2399,17 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
 
             Log($"ComicInfo generated for {generated} chapter(s) + {volumes.Length} volume root(s).");
+
+            // As saídas já criadas também precisam do XML novo — o KCC e o upload
+            // leem de lá, não dos volumes extraídos.
+            foreach (var outputFolder in new[] { CloudFolderName, KindleFolderName })
+            {
+                string outputRoot = Path.Combine(path, outputFolder);
+                if (GetVolumeDirs(outputRoot).Length == 0) continue;
+                int copied = MirrorComicInfo(path, outputRoot);
+                if (copied > 0) Log($"  {copied} ComicInfo.xml copied to /{outputFolder}.");
+            }
+
             RefreshSelectedStatus();
         }
 
@@ -2237,6 +2697,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
             _isAnimeUnitedAdmin = isAdmin;
             BtnUpload.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
+            BtnDeleteCloud.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
+            BtnUsuarios.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
             LanguageFieldRow.Visibility = isAdmin ? Visibility.Visible : Visibility.Collapsed;
             if (!_isAnimeUnitedMode) LoadMangas();
         }
@@ -2499,6 +2961,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             SetCheck(BtnExtract, hasImages);
 
             BtnResize.IsEnabled = hasImages;
+            BtnCloud.IsEnabled  = hasImages;
 
             BtnComicInfo.IsEnabled = hasImages;
             SetCheck(BtnComicInfo, hasComicInfo);
@@ -2506,8 +2969,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnCleanup.IsEnabled = hasComicInfo;
             SetCheck(BtnCleanup, cleaned);
 
-            // BtnResize = "Process & Convert (KCC)": habilita após cleanup
+            // Os dois processamentos ficam disponíveis após o cleanup. São destinos
+            // alternativos: o mesmo mangá vai para o Kindle ou para a nuvem.
             BtnResize.IsEnabled = cleaned;
+            BtnCloud.IsEnabled  = cleaned;
             string convertedDir = Path.Combine(mangaPath, "Converted");
             bool hasMobiInConverted = Directory.Exists(convertedDir) &&
                                       Directory.GetFiles(convertedDir, "*.mobi").Length > 0;
@@ -3037,6 +3502,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     BtnOrganize.IsEnabled = false;
                     BtnRead.IsEnabled = true;
                     BtnDownload.IsEnabled = true;
+                    BtnDeleteCloud.IsEnabled = _isAnimeUnitedAdmin && selected.IsOnCloud;
                     ClearDetailsPanel();
                     DetailMangaName.Text = selected.Name;
                     DetailAuthor.Text = $"{selected.RemoteVolumeCount} volume(s) on AnimeUnited";
@@ -3048,6 +3514,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     UpdateButtonStates(fullPath);
                     UpdateDetailsPanel(fullPath);
                     StartWatcher(fullPath);
+
+                    // Item do catálogo AnimeUnited que também existe no disco: IsRemote é
+                    // false (nada a baixar), mas continua apagável na nuvem.
+                    BtnDeleteCloud.IsEnabled = _isAnimeUnitedAdmin && selected.IsOnCloud;
                 }
             }
             else
@@ -3124,11 +3594,13 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             BtnExtract.IsEnabled = false;
             BtnComicInfo.IsEnabled = false;
             BtnResize.IsEnabled = false;
+            BtnCloud.IsEnabled = false;
             BtnCleanup.IsEnabled = false;
             BtnOpenKCC.IsEnabled = false;
             BtnSendToKindle.IsEnabled = false;
             BtnRemoveFromKindle.IsEnabled = false;
             BtnUpload.IsEnabled = false;
+            BtnDeleteCloud.IsEnabled = false;
         }
 
 
@@ -3305,6 +3777,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     {
                         Name = m.Name,
                         IsRemote = !alreadyLocal,
+                        IsOnCloud = true,   // veio de GET /api/mangas, então está no servidor
                         RemoteVolumeCount = m.VolumeCount,
                         RemoteCoverUrl = m.CoverUrl,
                         StatusColor = "#1a1a2a",
@@ -3334,6 +3807,75 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             var bytes = await DownloadImageBytes(coverUrl);
             if (bytes != null)
                 item.CoverImage = LoadImageFromBytes(bytes);
+        }
+
+        private void BtnUsuarios_Click(object sender, RoutedEventArgs e)
+        {
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            string email  = Properties.Settings.Default.AnimeUnitedUserEmail;
+
+            if (string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(email))
+            {
+                Log("AnimeUnited: configure a URL da API e o seu email antes de gerenciar apoiadores.");
+                return;
+            }
+
+            var janela = new UsersWindow(apiUrl, Properties.Settings.Default.AnimeUnitedApiKey, email)
+            {
+                Owner = this
+            };
+            janela.ShowDialog();
+        }
+
+        private async void BtnDeleteCloud_Click(object sender, RoutedEventArgs e)
+        {
+            if (MangaList.SelectedItem is not MangaItem item || !item.IsOnCloud)
+            {
+                Log("Select a manga from the AnimeUnited library first.");
+                return;
+            }
+
+            string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                Log("AnimeUnited: API URL not configured.");
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                $"Delete \"{item.Name}\" from the AnimeUnited server?\n\n" +
+                $"All {item.RemoteVolumeCount} volume(s) will be removed for every user.\n" +
+                "The server has no trash — this cannot be undone.\n\n" +
+                "Your local copy is not affected.",
+                "Delete from Cloud",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (confirm != MessageBoxResult.Yes)
+            {
+                Log("Delete cancelled.");
+                return;
+            }
+
+            BtnDeleteCloud.IsEnabled = false;
+            try
+            {
+                var client = new AnimeUnitedClient(apiUrl,
+                    Properties.Settings.Default.AnimeUnitedApiKey,
+                    Properties.Settings.Default.AnimeUnitedUserEmail);
+
+                Log($"▶ Deleting \"{item.Name}\" from AnimeUnited...");
+                var (files, bytes) = await client.DeleteMangaAsync(item.Name);
+                Log($"✓ Deleted \"{item.Name}\" — {files} file(s), {bytes / 1024.0 / 1024.0:N1} MB freed.");
+
+                LoadRemoteMangas();
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠ Could not delete: {ex.Message}");
+                BtnDeleteCloud.IsEnabled = true;
+            }
         }
 
         private async void BtnDownload_Click(object sender, RoutedEventArgs e)
@@ -3421,9 +3963,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (MangaList.SelectedItem is not MangaItem item || item.IsRemote || item.IsMobiOnly) return;
 
             string mangaPath = Path.Combine(basePath, item.Name);
-            var volumeDirs = Directory.Exists(mangaPath)
-                ? Directory.GetDirectories(mangaPath, "* - Volume *").OrderBy(v => v).ToArray()
-                : Array.Empty<string>();
+
+            // Sobe as páginas da nuvem, se o passo ☁ já rodou; senão as extraídas.
+            string sourceRoot = ResolveSourceRoot(mangaPath, CloudFolderName);
+            var volumeDirs = GetVolumeDirs(sourceRoot);
 
             if (volumeDirs.Length == 0)
             {
@@ -3477,6 +4020,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 return;
             }
 
+            Log(sourceRoot == mangaPath
+                ? "Source → extracted volumes (cloud processing not run yet)"
+                : $"Source → /{CloudFolderName}");
+
             var client = new AnimeUnitedClient(apiUrl, apiKey,
                 Properties.Settings.Default.AnimeUnitedUserEmail);
             var token = StartOperation();
@@ -3511,6 +4058,9 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 {
                     string volumeName = Path.GetFileName(volDir);
                     string localVolumeComicInfo = Path.Combine(volDir, "ComicInfo.xml");
+                    // Gerado depois do processamento? Ainda está só no volume extraído.
+                    if (!File.Exists(localVolumeComicInfo))
+                        localVolumeComicInfo = Path.Combine(mangaPath, volumeName, "ComicInfo.xml");
                     if (!File.Exists(localVolumeComicInfo)) continue;
 
                     try

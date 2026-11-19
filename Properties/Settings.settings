@@ -5,6 +5,9 @@
     <Setting Name="BasePath" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
+    <Setting Name="CloudMaxPixels" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">1600</Value>
+    </Setting>
     <Setting Name="KindleDevice" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
@@ -21,7 +24,7 @@
       <Value Profile="(Default)" />
     </Setting>
     <Setting Name="AnimeUnitedApiUrl" Type="System.String" Scope="User">
-      <Value Profile="(Default)">https://animeunited.com.br/API/MangaManager</Value>
+      <Value Profile="(Default)">https://mangas.animeunited.com.br</Value>
     </Setting>
     <Setting Name="AnimeUnitedApiKey" Type="System.String" Scope="User">
       <Value Profile="(Default)">TROQUE-ESTA-CHAVE-AQUI</Value>
