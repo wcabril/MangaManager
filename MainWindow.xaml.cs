@@ -634,6 +634,98 @@ namespace MangaManager
             catch { }
         }
 
+        // ── Destinos disputados ──────────────────────────────────────────────
+        // Um capítulo costuma trazer a mesma página em dois formatos: os grupos de
+        // scan mandam 001.png e 001.jpg do mesmo quadro. Como a saída tem extensão
+        // fixa, as duas dão o mesmo destino, e antes vencia quem vinha primeiro no
+        // alfabeto — o .jpg, justamente a cópia com perda.
+
+        // Menor é melhor: o que vence é a origem que perdeu menos informação.
+        private static int SourceRank(string file) =>
+            Path.GetExtension(file).ToLowerInvariant() switch
+            {
+                ".png"  => 0,   // sem perda
+                ".webp" => 1,   // pode ser sem perda, e comprime melhor que JPEG
+                _       => 2,   // jpg/jpeg
+            };
+
+        // Só o cabeçalho: validateImageData=false evita decodificar a imagem toda
+        // para saber o tamanho. Devolve null no formato que o GDI+ não abre (.webp).
+        private static (int W, int H)? TryReadImageSize(string file)
+        {
+            try
+            {
+                using var fs  = File.OpenRead(file);
+                using var img = System.Drawing.Image.FromStream(fs, false, false);
+                return (img.Width, img.Height);
+            }
+            catch { return null; }
+        }
+
+        // Resolve origem→destino antes de converter. Fica uma página por destino: o
+        // leitor precisa de 001, 002, 003 em ordem, e renomear a repetida só
+        // inseriria a mesma página duas vezes no capítulo.
+        //
+        // Qual das origens fica depende do que a diferença entre elas revela:
+        //
+        //  • mesma dimensão — é a mesma página gravada em dois formatos. Fica a que
+        //    perdeu menos: o .png, e não o .jpg que vencia por ordem alfabética.
+        //
+        //  • dimensão diferente — são dois releases do capítulo misturados na mesma
+        //    pasta, e aí o formato não diz nada: num caso real o .png era o banner
+        //    do grupo (2172×724) e o .jpg a página de verdade (1080×1920). Fica a de
+        //    mais pixels, que é a página, e o capítulo é reportado para limpeza.
+        private static List<(string Source, string Dest)> PlanOutputs(
+            string path, string outputRoot, string outputExt, string[] images,
+            out int duplicates, out List<string> mixedFolders)
+        {
+            var jobs = new List<(string Source, string Dest)>(images.Length);
+            var mixed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            duplicates = 0;
+
+            foreach (var group in images.GroupBy(
+                         img => Path.ChangeExtension(Path.GetRelativePath(path, img), outputExt),
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                string dest = Path.Combine(outputRoot, group.Key);
+
+                if (!group.Skip(1).Any())
+                {
+                    jobs.Add((group.First(), dest));
+                    continue;
+                }
+
+                var sized = group.Select(f => (File: f, Size: TryReadImageSize(f))).ToArray();
+                bool sameSize = sized.All(s => s.Size != null) &&
+                                sized.Select(s => s.Size!.Value).Distinct().Count() == 1;
+
+                string best;
+                if (sameSize)
+                {
+                    best = sized.Select(s => s.File)
+                                .OrderBy(SourceRank)
+                                .ThenByDescending(f => new FileInfo(f).Length)
+                                .First();
+                }
+                else
+                {
+                    best = sized
+                        .OrderByDescending(s => s.Size == null ? 0L : (long)s.Size.Value.W * s.Size.Value.H)
+                        .ThenBy(s => SourceRank(s.File))
+                        .First().File;
+
+                    string? folder = Path.GetDirectoryName(Path.GetRelativePath(path, best));
+                    if (!string.IsNullOrEmpty(folder)) mixed.Add(folder);
+                }
+
+                duplicates += sized.Length - 1;
+                jobs.Add((best, dest));
+            }
+
+            mixedFolders = mixed.OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+            return jobs.OrderBy(j => j.Dest, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
         // ── O que já subiu para a nuvem ──────────────────────────────────────
         // A API lista volumes, não capítulos; este arquivo é o que diz, capítulo a
         // capítulo, o que já foi enviado e se mudou desde então.
@@ -736,8 +828,19 @@ namespace MangaManager
             string outputExt  = webp ? ".webp" : ".jpg";
             string formatLabel = webp ? $"WebP q{ProcessWebpQuality}" : $"JPEG q{ProcessJpegQuality}";
 
-            Log($"Processing {images.Length} image(s) — {sizeLabel}, {formatLabel}...");
+            var jobs = PlanOutputs(path, outputRoot, outputExt, images,
+                                   out int duplicates, out var mixedFolders);
+
+            Log($"Processing {jobs.Count} image(s) — {sizeLabel}, {formatLabel}...");
             Log($"  Output → {outputRoot}");
+            if (duplicates > 0)
+                Log($"  {duplicates} page(s) exist twice in the source — one output each, " +
+                    "from the better source.");
+            foreach (var folder in mixedFolders.Take(5))
+                Log($"  ⚠ {folder}: two different scans of the same pages. Using the larger one — " +
+                    "worth cleaning the folder.");
+            if (mixedFolders.Count > 5)
+                Log($"  ⚠ and {mixedFolders.Count - 5} more folder(s) with mixed scans.");
             if (ongoing) Log($"  🔄 Ongoing: only pages missing from /{outputFolder} will be processed.");
             BtnOpenKCC.IsEnabled = false;
             BtnResize.IsEnabled = false;
@@ -746,32 +849,21 @@ namespace MangaManager
 
             await Task.Run(() =>
             {
-                int total = images.Length;
-                int current = 0, converted = 0, failed = 0, skipped = 0, colorPages = 0, kept = 0, reused = 0;
+                int total = jobs.Count;
+                int current = 0, converted = 0, failed = 0, colorPages = 0, kept = 0, reused = 0;
                 long bytesBefore = 0, bytesAfter = 0;
 
-                // Destinos já gravados NESTA passada. Rodar de novo sobrescreve a saída
-                // anterior; o conflito só existe entre duas origens do mesmo capítulo.
-                var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var img in images)
+                // Os destinos repetidos já foram resolvidos em PlanOutputs; aqui cada
+                // par origem→destino é único.
+                foreach (var (img, dest) in jobs)
                 {
                     if (token.IsCancellationRequested) break;
 
-                    string relative = Path.GetRelativePath(path, img);
-                    string dest     = Path.Combine(outputRoot, Path.ChangeExtension(relative, outputExt));
                     // Quando o original é mantido como está, ele vai para a saída com a
                     // extensão de origem — um .png renomeado para .jpg não abriria.
                     string keepDest = Path.ChangeExtension(dest, Path.GetExtension(img));
 
-                    // Ex.: existe 001.png e 001.jpg no mesmo capítulo — são páginas
-                    // distintas que dariam o mesmo destino. A primeira fica; esta é pulada.
-                    if (!written.Add(dest))
-                    {
-                        skipped++;
-                        Dispatcher.Invoke(() => Log($"  ⚠ skipped (name already taken): {Path.GetFileName(img)}"));
-                    }
-                    else if (ongoing && (IsUpToDate(dest, img) || IsUpToDate(keepDest, img)))
+                    if (ongoing && (IsUpToDate(dest, img) || IsUpToDate(keepDest, img)))
                     {
                         reused++;
                     }
@@ -912,7 +1004,7 @@ namespace MangaManager
                     }
                     if (reused     > 0) Log($"  🔄 {reused} page(s) already in /{outputFolder} were kept.");
                     if (kept       > 0) Log($"  {kept} kept as-is (already smaller than re-encoding).");
-                    if (skipped    > 0) Log($"  {skipped} skipped (two pages with the same name in one chapter).");
+                    if (duplicates > 0) Log($"  {duplicates} repeated page name(s) resolved to one output each.");
                     if (comicInfos > 0) Log($"  {comicInfos} ComicInfo.xml copied to /{outputFolder}.");
                     if (failed  > 0) Log($"  ⚠ {failed} failed.");
 
