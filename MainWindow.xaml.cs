@@ -93,9 +93,20 @@ namespace MangaManager
                 Properties.Settings.Default.Save();
             };
 
-            // Carrega configurações do AnimeUnited (API URL/Key já vêm fixas nas settings, não são editáveis aqui)
+            // Carrega configurações do AnimeUnited (a API URL vem fixa nas settings)
             AnimeUnitedEmailBox.Text = Properties.Settings.Default.AnimeUnitedUserEmail;
             AnimeUnitedEmailBox.LostFocus += (s, e) => RefreshAnimeUnitedAdminStatus();
+
+            // O valor que vem compilado é só um marcador; mostrá-lo no campo faria
+            // parecer que existe uma chave configurada.
+            string savedKey = Properties.Settings.Default.AnimeUnitedApiKey ?? "";
+            AnimeUnitedApiKeyBox.Password =
+                savedKey.StartsWith("TROQUE", StringComparison.OrdinalIgnoreCase) ? "" : savedKey;
+            AnimeUnitedApiKeyBox.LostFocus += (s, e) =>
+            {
+                AnimeUnitedFields_Changed(s, e);
+                RefreshAnimeUnitedAdminStatus();
+            };
             RefreshAnimeUnitedAdminStatus();
 
             Loaded += async (s, e) => await RunFirstRunWizardIfNeeded();
@@ -3038,6 +3049,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (AnimeUnitedEmailBox == null) return;
 
             Properties.Settings.Default.AnimeUnitedUserEmail = AnimeUnitedEmailBox.Text.Trim();
+
+            // A chave vai para o user.config (perfil do Windows), nunca para o
+            // Settings.settings do projeto — o repositório é público.
+            if (AnimeUnitedApiKeyBox != null)
+                Properties.Settings.Default.AnimeUnitedApiKey = AnimeUnitedApiKeyBox.Password.Trim();
+
             Properties.Settings.Default.Save();
         }
 
@@ -3059,7 +3076,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             // Sem chave o servidor nega tudo e os botões de admin somem sem explicação.
             // Dizer isso em voz alta evita procurar o botão de upload que nunca aparece.
             if (string.IsNullOrWhiteSpace(apiKey) || apiKey.StartsWith("TROQUE", StringComparison.OrdinalIgnoreCase))
-                Log("AnimeUnited: API key missing — paste it in the settings panel. " +
+                Log("AnimeUnited: API key missing — paste it in the AnimeUnited panel (API key field) and hit 💾 Salvar. " +
                     "Upload, Delete and Users stay hidden until then.");
 
             bool isAdmin = false;

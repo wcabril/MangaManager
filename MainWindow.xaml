@@ -1015,6 +1015,23 @@
                             <Run Text="Usado para validar se seu email tem acesso aos mangás do AnimeUnited."/>
                         </TextBlock>
 
+                        <!-- API key -->
+                        <Grid Height="26" Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="90"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="API key" Foreground="#AAAAAA"
+                                       FontSize="11" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="AnimeUnitedApiKeyBox" Grid.Column="1"
+                                         Background="#2D2D2D" Foreground="White" BorderBrush="#555"
+                                         VerticalContentAlignment="Center" Padding="4,0" FontSize="11"/>
+                        </Grid>
+
+                        <TextBlock Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4">
+                            <Run Text="Só para quem publica: libera Upload, Excluir da nuvem e Usuários. Fica guardada no seu perfil do Windows, nunca no projeto."/>
+                        </TextBlock>
+
                         <Button Content="💾 Salvar" Click="AnimeUnitedSave_Click" Height="24" Padding="0,3"/>
                     </StackPanel>
                 </Expander>
