@@ -10,6 +10,14 @@
 		<ApplicationIcon>app.ico</ApplicationIcon>
 		<UseSkiaSharp>false</UseSkiaSharp>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<!-- App é WPF, só roda no Windows. Sem fixar a plataforma, os pacotes
+		     nativos (Magick, pdfium, SQLite) copiam para a saída os binários de
+		     Linux, musl e macOS também: 166 MB de runtimes que nunca são usados.
+		     O Append=false mantém o exe em bin/<cfg>/net8.0-windows, sem a pasta
+		     win-x64 no meio do caminho. -->
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+		<SelfContained>false</SelfContained>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -37,6 +45,7 @@
 
 	<ItemGroup>
 	  <PackageReference Include="Docnet.Core" Version="2.6.0" />
+	  <PackageReference Include="Magick.NET-Q8-x64" Version="15.1.1" />
 	  <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
 	</ItemGroup>
 

@@ -31,6 +31,8 @@ namespace MangaManager
         string _currentMangaPath = string.Empty;
         bool _isAnimeUnitedMode = false;
         bool _isAnimeUnitedAdmin = false;
+        // Catálogo da nuvem na última leitura. Null = não deu para perguntar.
+        HashSet<string>? _cloudMangaNames;
 
         // Constantes para detecção de USB
         private const int WM_DEVICECHANGE = 0x0219;
@@ -589,6 +591,38 @@ namespace MangaManager
         // A capa serve o catálogo do site: vale mais qualidade que nas páginas.
         private const int CoverJpegQuality = 92;
 
+        // WebP na mesma qualidade nominal do JPEG. Medido em 10 páginas deste acervo,
+        // contra o que o app gravava antes (JPEG q70, cinza de 1 canal nas páginas P&B):
+        // 1,87 MB → 1,19 MB, 36% menor, e com erro RMS 2,48 contra 5,32. Ganha nos dois
+        // lados ao mesmo tempo, então não há troca a ponderar aqui.
+        private const int ProcessWebpQuality = 70;
+
+        // Só a nuvem recebe WebP. O Kindle continua em JPEG: o KCC não lê WebP e
+        // reconverteria tudo, e o MOBI não ganharia nada com isso.
+        private static bool UsesWebp(string outputFolder) => outputFolder == CloudFolderName;
+
+        // Não convertemos para cinza antes de gravar: o WebP guarda a crominância em
+        // plano próprio, e numa página P&B esse plano fica liso e custa quase nada —
+        // o arquivo sai do tamanho de um de canal único sem o trabalho da conversão.
+        private static void SaveWebp(System.Drawing.Bitmap bmp, string destPath, int quality) =>
+            WebpWriter.Save(bmp, destPath, quality);
+
+        // Tira da saída a mesma página gravada em outra extensão. Sem isto, trocar o
+        // formato do alvo deixaria 001.jpg ao lado de 001.webp e a nuvem receberia a
+        // página duas vezes.
+        private static void DropOtherExtensions(string keepFile)
+        {
+            try
+            {
+                string dir  = Path.GetDirectoryName(keepFile)!;
+                string name = Path.GetFileNameWithoutExtension(keepFile);
+                foreach (var f in Directory.GetFiles(dir, name + ".*"))
+                    if (IsPageImage(f) && !f.Equals(keepFile, StringComparison.OrdinalIgnoreCase))
+                        File.Delete(f);
+            }
+            catch { }
+        }
+
         // ── O que já subiu para a nuvem ──────────────────────────────────────
         // A API lista volumes, não capítulos; este arquivo é o que diz, capítulo a
         // capítulo, o que já foi enviado e se mudou desde então.
@@ -687,7 +721,11 @@ namespace MangaManager
             // não adianta nada para o Kindle — esse lado processa tudo na primeira vez.
             bool ongoing = IsOngoing(path);
 
-            Log($"Processing {images.Length} image(s) — {sizeLabel}, JPEG q{ProcessJpegQuality}...");
+            bool webp         = UsesWebp(outputFolder);
+            string outputExt  = webp ? ".webp" : ".jpg";
+            string formatLabel = webp ? $"WebP q{ProcessWebpQuality}" : $"JPEG q{ProcessJpegQuality}";
+
+            Log($"Processing {images.Length} image(s) — {sizeLabel}, {formatLabel}...");
             Log($"  Output → {outputRoot}");
             if (ongoing) Log($"  🔄 Ongoing: only pages missing from /{outputFolder} will be processed.");
             BtnOpenKCC.IsEnabled = false;
@@ -710,7 +748,7 @@ namespace MangaManager
                     if (token.IsCancellationRequested) break;
 
                     string relative = Path.GetRelativePath(path, img);
-                    string dest     = Path.Combine(outputRoot, Path.ChangeExtension(relative, ".jpg"));
+                    string dest     = Path.Combine(outputRoot, Path.ChangeExtension(relative, outputExt));
                     // Quando o original é mantido como está, ele vai para a saída com a
                     // extensão de origem — um .png renomeado para .jpg não abriria.
                     string keepDest = Path.ChangeExtension(dest, Path.GetExtension(img));
@@ -771,9 +809,15 @@ namespace MangaManager
                                     using var processed = ProcessForEInk(resized);
                                     SaveJpeg(processed, temp, ProcessJpegQuality, grayscale: true);
                                 }
+                                else if (webp)
+                                {
+                                    // Nuvem: lida em celular e PC, onde o WebP é lido por
+                                    // qualquer navegador. A cor é preservada sempre.
+                                    SaveWebp(resized, temp, ProcessWebpQuality);
+                                }
                                 else
                                 {
-                                    // Nuvem: lida em celular e PC. Página colorida fica colorida;
+                                    // Nuvem em JPEG: página colorida fica colorida;
                                     // a P&B vira JPEG de 1 canal só para economizar espaço.
                                     bool color = HasColor(resized);
                                     SaveJpeg(resized, temp, ProcessJpegQuality, grayscale: !color);
@@ -793,9 +837,7 @@ namespace MangaManager
                                     // A saída precisa da página mesmo assim: copia o
                                     // original como está, sem reencodar.
                                     File.Copy(img, keepDest, overwrite: true);
-                                    if (!keepDest.Equals(dest, StringComparison.OrdinalIgnoreCase) &&
-                                        File.Exists(dest))
-                                        File.Delete(dest);   // sobra de uma passada anterior
+                                    DropOtherExtensions(keepDest);
                                     kept++;
                                     bytesBefore += sizeBefore;
                                     bytesAfter  += sizeBefore;
@@ -811,11 +853,9 @@ namespace MangaManager
                                 if (File.Exists(dest)) File.Delete(dest);
                                 File.Move(temp, dest);
                                 // O original fica intacto na pasta do volume — é a origem
-                                // do outro alvo. Só sai a sobra de uma passada anterior
-                                // que tinha mantido esta página na extensão de origem.
-                                if (!keepDest.Equals(dest, StringComparison.OrdinalIgnoreCase) &&
-                                    File.Exists(keepDest))
-                                    File.Delete(keepDest);
+                                // do outro alvo. O que sai é a mesma página gravada antes
+                                // em outro formato, aqui na saída.
+                                DropOtherExtensions(dest);
 
                                 bytesBefore += sizeBefore;
                                 bytesAfter  += tamNovo;
@@ -842,10 +882,13 @@ namespace MangaManager
 
                 Dispatcher.Invoke(() =>
                 {
-                    Log(applyEInk
-                        ? $"✓ Processed {converted} image(s) — {sizeLabel}, grayscale for e-ink."
-                        : $"✓ Processed {converted} image(s) — {sizeLabel} " +
-                          $"({colorPages} in color, {converted - colorPages} grayscale).");
+                    if (applyEInk)
+                        Log($"✓ Processed {converted} image(s) — {sizeLabel}, grayscale for e-ink.");
+                    else if (webp)
+                        Log($"✓ Processed {converted} image(s) — {sizeLabel}, WebP q{ProcessWebpQuality}.");
+                    else
+                        Log($"✓ Processed {converted} image(s) — {sizeLabel} " +
+                            $"({colorPages} in color, {converted - colorPages} grayscale).");
                     if (bytesBefore > 0)
                     {
                         // Antes isto sempre dizia "smaller", mesmo quando o volume
@@ -1410,9 +1453,10 @@ namespace MangaManager
             // O selo 🔞 é o mesmo para todos os cards: carrega uma vez só.
             await EnsureNsfwBadgeImageAsync();
 
-            // Se for admin, busca o catálogo do AnimeUnited uma vez para marcar quem já está no servidor
+            // Catálogo do AnimeUnited: marca quem já está no servidor. Vale para
+            // qualquer usuário, não só admin — o painel de detalhes também mostra.
+            // Null = não deu para perguntar, e aí a resposta é "não sei", não "não".
             HashSet<string>? animeUnitedNames = null;
-            if (_isAnimeUnitedAdmin)
             {
                 string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
                 if (!string.IsNullOrWhiteSpace(apiUrl))
@@ -1430,6 +1474,7 @@ namespace MangaManager
                     }
                 }
             }
+            _cloudMangaNames = animeUnitedNames;
 
             var tasks = new List<Task>();
             foreach (var name in dirs)
@@ -3009,6 +3054,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             string apiUrl = Properties.Settings.Default.AnimeUnitedApiUrl;
             string email  = Properties.Settings.Default.AnimeUnitedUserEmail;
 
+            string apiKey = Properties.Settings.Default.AnimeUnitedApiKey;
+
+            // Sem chave o servidor nega tudo e os botões de admin somem sem explicação.
+            // Dizer isso em voz alta evita procurar o botão de upload que nunca aparece.
+            if (string.IsNullOrWhiteSpace(apiKey) || apiKey.StartsWith("TROQUE", StringComparison.OrdinalIgnoreCase))
+                Log("AnimeUnited: API key missing — paste it in the settings panel. " +
+                    "Upload, Delete and Users stay hidden until then.");
+
             bool isAdmin = false;
             if (!string.IsNullOrWhiteSpace(apiUrl) && !string.IsNullOrWhiteSpace(email))
             {
@@ -3692,6 +3745,12 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             SetDetailYesNo(DetailMobi,       hasMobi);
             SetDetailYesNo(DetailKindle,     onKindle);
 
+            // Sem catálogo (API fora do ar, chave errada) a resposta honesta é "—".
+            if (_cloudMangaNames == null)
+                SetDetailUnknown(DetailCloud);
+            else
+                SetDetailYesNo(DetailCloud, _cloudMangaNames.Contains(mangaName));
+
             var kindleRows = GetKindleVolumeStatuses(mangaPath, kindlePath);
             KindleVolumeList.ItemsSource = kindleRows;
             KindleVolumeSection.Visibility = kindleRows.Count > 0
@@ -3729,18 +3788,23 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             DetailAuthor.Text     = "—";
             DetailVolumes.Text    = "—";
             DetailChapters.Text   = "—";
-            foreach (var tb in new[] { DetailExtracted, DetailComicInfo, DetailCleanup, DetailMobi, DetailKindle })
-            {
-                tb.Text = "—";
-                tb.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
-            }
+            foreach (var tb in new[] { DetailExtracted, DetailComicInfo, DetailCleanup,
+                                       DetailMobi, DetailKindle, DetailCloud })
+                SetDetailUnknown(tb);
             LocalPipelineStatusSection.Visibility = Visibility.Visible;
             KindleVolumeList.ItemsSource = null;
             KindleVolumeSection.Visibility = Visibility.Collapsed;
             ReadVolumeList.ItemsSource = null;
             ReadVolumeSection.Visibility = Visibility.Collapsed;
             SyncFlagCheckboxes(null);
+        }
+
+        // Estado que não dá para afirmar — diferente de "não".
+        private static void SetDetailUnknown(System.Windows.Controls.TextBlock tb)
+        {
+            tb.Text = "—";
+            tb.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
         }
 
         // ── Marcas da obra ───────────────────────────────────────────────────
@@ -3766,7 +3830,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
         private async void ChkNsfw_Changed(object sender, RoutedEventArgs e)
         {
-            if (_syncingFlags || _currentMangaPath == null) return;
+            if (_syncingFlags || string.IsNullOrEmpty(_currentMangaPath)) return;
 
             bool nsfw = ChkNsfw.IsChecked == true;
             var flags = LoadMangaFlags(_currentMangaPath) with { Nsfw = nsfw };
@@ -3796,7 +3860,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
 
         private void ChkOngoing_Changed(object sender, RoutedEventArgs e)
         {
-            if (_syncingFlags || _currentMangaPath == null) return;
+            if (_syncingFlags || string.IsNullOrEmpty(_currentMangaPath)) return;
 
             bool ongoing = ChkOngoing.IsChecked == true;
             SaveMangaFlags(_currentMangaPath, LoadMangaFlags(_currentMangaPath) with { Ongoing = ongoing });
