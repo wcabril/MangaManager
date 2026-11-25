@@ -364,6 +364,46 @@ namespace MangaManager
                 ? Directory.GetDirectories(root, "* - Volume *").OrderBy(v => v).ToArray()
                 : Array.Empty<string>();
 
+        private static bool IsPageImage(string f) =>
+            f.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase);
+
+        private static bool HasPages(string dir) =>
+            Directory.Exists(dir) && Directory.EnumerateFiles(dir).Any(IsPageImage);
+
+        // Volume já empacotado: há <Volume>*.mobi em /Converted mais novo que a página
+        // mais recente do volume. Capítulo novo envelhece o MOBI, que então é refeito.
+        private static bool HasFreshMobi(string convertedFolder, string volumeDir)
+        {
+            try
+            {
+                var mobis = Directory.Exists(convertedFolder)
+                    ? Directory.GetFiles(convertedFolder, Path.GetFileName(volumeDir) + "*.mobi")
+                    : Array.Empty<string>();
+                if (mobis.Length == 0) return false;
+
+                var pages = Directory.GetFiles(volumeDir, "*.*", SearchOption.AllDirectories);
+                if (pages.Length == 0) return true;
+
+                return mobis.Max(File.GetLastWriteTimeUtc) >= pages.Max(File.GetLastWriteTimeUtc);
+            }
+            catch { return false; }
+        }
+
+        // Saída já pronta: existe e não é mais velha que a origem. Comparar a data
+        // evita tratar como pronta uma página que foi reextraída depois.
+        private static bool IsUpToDate(string output, string source)
+        {
+            try
+            {
+                return File.Exists(output) &&
+                       File.GetLastWriteTimeUtc(output) >= File.GetLastWriteTimeUtc(source);
+            }
+            catch { return false; }
+        }
+
         // De onde o KCC/upload devem ler: a saída daquele alvo, quando o processamento
         // já rodou; senão os volumes extraídos, como era antes.
         private static string ResolveSourceRoot(string mangaPath, string outputFolder)
@@ -386,6 +426,216 @@ namespace MangaManager
                     copied++;
                 }
             return copied;
+        }
+
+        // ==============================
+        // 🔞 NSFW  ·  🔄 EM ANDAMENTO  (marcas por mangá)
+        // ==============================
+
+        // O selo mora no site do AnimeUnited. Baixamos uma vez para o LocalAppData
+        // para não depender da rede a cada capa desenhada.
+        private const string NsfwBadgeUrl =
+            "https://www.animeunited.com.br/stybycmo/inc/temporada/assets/img/NSFW.png";
+
+        private static string NsfwBadgeCachePath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MangaManager", "NSFW.png");
+
+        private const string CoverName         = "cover.jpg";
+        private const string CoverOriginalName = "cover_original.jpg";
+
+        private record MangaFlags
+        {
+            public bool Nsfw { get; init; }
+            public bool Ongoing { get; init; }
+        }
+
+        private static string FlagsFilePath(string mangaPath) =>
+            Path.Combine(mangaPath, "manga_flags.json");
+
+        private static MangaFlags LoadMangaFlags(string mangaPath)
+        {
+            try
+            {
+                string path = FlagsFilePath(mangaPath);
+                if (!File.Exists(path)) return new MangaFlags();
+                return JsonSerializer.Deserialize<MangaFlags>(File.ReadAllText(path)) ?? new MangaFlags();
+            }
+            catch { return new MangaFlags(); }
+        }
+
+        private static void SaveMangaFlags(string mangaPath, MangaFlags flags)
+        {
+            try
+            {
+                File.WriteAllText(FlagsFilePath(mangaPath),
+                    JsonSerializer.Serialize(flags, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { }
+        }
+
+        // Obra em andamento: cada passo do pipeline refaz só o que falta.
+        private static bool IsOngoing(string mangaPath) => LoadMangaFlags(mangaPath).Ongoing;
+
+        private System.Windows.Media.ImageSource? _nsfwBadgeImage;
+
+        private async Task<string?> EnsureNsfwBadgeFileAsync()
+        {
+            string cache = NsfwBadgeCachePath;
+            if (File.Exists(cache) && new FileInfo(cache).Length > 0) return cache;
+
+            var bytes = await DownloadImageBytes(NsfwBadgeUrl);
+            if (bytes == null)
+            {
+                Log("⚠ Could not download the NSFW badge — check the connection.");
+                return null;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+            await File.WriteAllBytesAsync(cache, bytes);
+            return cache;
+        }
+
+        private async Task EnsureNsfwBadgeImageAsync()
+        {
+            if (_nsfwBadgeImage != null) return;
+            string? path = await EnsureNsfwBadgeFileAsync();
+            if (path != null) _nsfwBadgeImage = LoadImageFromFile(path);
+        }
+
+        // Image.FromFile segura o arquivo aberto; lemos para a memória e soltamos.
+        private static System.Drawing.Bitmap LoadBitmapCopy(string path)
+        {
+            using var fs = File.OpenRead(path);
+            using var loaded = System.Drawing.Image.FromStream(fs);
+            return new System.Drawing.Bitmap(loaded);
+        }
+
+        // Compõe o selo no canto superior direito da capa. A capa limpa fica em
+        // cover_original.jpg e é sempre dela que partimos: assim o selo não é
+        // aplicado duas vezes nem a capa perde qualidade a cada clique.
+        private async Task<bool> ApplyNsfwBadgeToCover(string mangaPath)
+        {
+            string cover    = Path.Combine(mangaPath, CoverName);
+            string original = Path.Combine(mangaPath, CoverOriginalName);
+
+            if (!File.Exists(cover) && !File.Exists(original))
+            {
+                Log("⚠ This manga has no cover.jpg — the badge was saved as a mark only.");
+                return false;
+            }
+
+            string? badgeFile = await EnsureNsfwBadgeFileAsync();
+            if (badgeFile == null) return false;
+
+            try
+            {
+                if (!File.Exists(original)) File.Copy(cover, original);
+
+                using var baseImg = LoadBitmapCopy(original);
+                using var seal    = LoadBitmapCopy(badgeFile);
+
+                // Capa indexada (alguns PNG) não aceita Graphics: redesenhamos num
+                // canvas de 32 bits antes de compor.
+                using var canvas = new System.Drawing.Bitmap(baseImg.Width, baseImg.Height,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                int sealW  = Math.Max(1, (int)(baseImg.Width * 0.30f));
+                int sealH  = Math.Max(1, (int)(seal.Height * ((float)sealW / seal.Width)));
+                int margin = Math.Max(2, (int)(baseImg.Width * 0.03f));
+
+                using (var g = System.Drawing.Graphics.FromImage(canvas))
+                {
+                    g.InterpolationMode   = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.CompositingQuality  = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+                    g.DrawImage(baseImg, 0, 0, baseImg.Width, baseImg.Height);
+                    g.DrawImage(seal, baseImg.Width - sealW - margin, margin, sealW, sealH);
+                }
+
+                string temp = cover + ".tmp";
+                SaveJpeg(canvas, temp, CoverJpegQuality, grayscale: false);
+                if (File.Exists(cover)) File.Delete(cover);
+                File.Move(temp, cover);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠ Could not apply the NSFW badge: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Volta a capa limpa. Sem cover_original.jpg não há o que restaurar — a capa
+        // atual nunca recebeu o selo.
+        private bool RemoveNsfwBadgeFromCover(string mangaPath)
+        {
+            string cover    = Path.Combine(mangaPath, CoverName);
+            string original = Path.Combine(mangaPath, CoverOriginalName);
+            if (!File.Exists(original)) return false;
+
+            try
+            {
+                File.Copy(original, cover, overwrite: true);
+                File.Delete(original);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠ Could not restore the clean cover: {ex.Message}");
+                return false;
+            }
+        }
+
+        // A capa serve o catálogo do site: vale mais qualidade que nas páginas.
+        private const int CoverJpegQuality = 92;
+
+        // ── O que já subiu para a nuvem ──────────────────────────────────────
+        // A API lista volumes, não capítulos; este arquivo é o que diz, capítulo a
+        // capítulo, o que já foi enviado e se mudou desde então.
+        private static string UploadStateFilePath(string mangaPath) =>
+            Path.Combine(mangaPath, "upload_state.json");
+
+        private static string UploadKey(string volumeName, string chapterName) =>
+            $"{volumeName}/{chapterName}";
+
+        private static Dictionary<string, string> LoadUploadState(string mangaPath)
+        {
+            try
+            {
+                string path = UploadStateFilePath(mangaPath);
+                if (!File.Exists(path)) return new();
+                return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? new();
+            }
+            catch { return new(); }
+        }
+
+        private static void SaveUploadState(string mangaPath, Dictionary<string, string> state)
+        {
+            try
+            {
+                File.WriteAllText(UploadStateFilePath(mangaPath),
+                    JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { }
+        }
+
+        // Digital do capítulo: quantidade de arquivos, bytes e a data mais recente.
+        // Página acrescentada ou reprocessada muda a digital e o capítulo volta a subir.
+        private static string ChapterFingerprint(string chapterDir)
+        {
+            try
+            {
+                var files = Directory.GetFiles(chapterDir);
+                long bytes = 0, newest = 0;
+                foreach (var f in files)
+                {
+                    var info = new FileInfo(f);
+                    bytes += info.Length;
+                    newest = Math.Max(newest, info.LastWriteTimeUtc.Ticks);
+                }
+                return $"{files.Length}:{bytes}:{newest}";
+            }
+            catch { return Guid.NewGuid().ToString("N"); }  // ilegível = trata como mudado
         }
 
         // ☁ Nuvem: teto próprio, cor preservada, sem tratamento de e-ink (lê-se em celular e PC).
@@ -432,8 +682,14 @@ namespace MangaManager
                 return;
             }
 
+            // Em andamento: página que já existe na saída DESTE alvo e é mais nova que a
+            // origem fica como está. Como cada alvo tem a sua pasta, ter feito a nuvem
+            // não adianta nada para o Kindle — esse lado processa tudo na primeira vez.
+            bool ongoing = IsOngoing(path);
+
             Log($"Processing {images.Length} image(s) — {sizeLabel}, JPEG q{ProcessJpegQuality}...");
             Log($"  Output → {outputRoot}");
+            if (ongoing) Log($"  🔄 Ongoing: only pages missing from /{outputFolder} will be processed.");
             BtnOpenKCC.IsEnabled = false;
             BtnResize.IsEnabled = false;
             BtnCloud.IsEnabled = false;
@@ -442,7 +698,7 @@ namespace MangaManager
             await Task.Run(() =>
             {
                 int total = images.Length;
-                int current = 0, converted = 0, failed = 0, skipped = 0, colorPages = 0, kept = 0;
+                int current = 0, converted = 0, failed = 0, skipped = 0, colorPages = 0, kept = 0, reused = 0;
                 long bytesBefore = 0, bytesAfter = 0;
 
                 // Destinos já gravados NESTA passada. Rodar de novo sobrescreve a saída
@@ -465,6 +721,10 @@ namespace MangaManager
                     {
                         skipped++;
                         Dispatcher.Invoke(() => Log($"  ⚠ skipped (name already taken): {Path.GetFileName(img)}"));
+                    }
+                    else if (ongoing && (IsUpToDate(dest, img) || IsUpToDate(keepDest, img)))
+                    {
+                        reused++;
                     }
                     else
                     {
@@ -596,6 +856,7 @@ namespace MangaManager
                             : $"{-variacao:N0}% LARGER";
                         Log($"  {bytesBefore / 1024.0 / 1024.0:N1} MB → {bytesAfter / 1024.0 / 1024.0:N1} MB ({veredito})");
                     }
+                    if (reused     > 0) Log($"  🔄 {reused} page(s) already in /{outputFolder} were kept.");
                     if (kept       > 0) Log($"  {kept} kept as-is (already smaller than re-encoding).");
                     if (skipped    > 0) Log($"  {skipped} skipped (two pages with the same name in one chapter).");
                     if (comicInfos > 0) Log($"  {comicInfos} ComicInfo.xml copied to /{outputFolder}.");
@@ -837,6 +1098,21 @@ namespace MangaManager
             string convertedFolder = Path.Combine(path, "Converted");
             Directory.CreateDirectory(convertedFolder);
 
+            // Em andamento: volume cujo MOBI já está em dia não volta para o KCC.
+            if (IsOngoing(path))
+            {
+                var pending = volumes.Where(v => !HasFreshMobi(convertedFolder, v)).ToArray();
+                int ready = volumes.Length - pending.Length;
+                if (ready > 0) Log($"🔄 Ongoing: {ready} volume(s) already have an up-to-date MOBI.");
+
+                if (pending.Length == 0)
+                {
+                    Log("✓ Nothing to convert — every volume is already in /Converted.");
+                    return;
+                }
+                volumes = pending;
+            }
+
             // -n  = no image processing (images already resized in previous step)
             // -m  = manga style (right-to-left)
             // -f MOBI = output format
@@ -998,6 +1274,16 @@ namespace MangaManager
             public string ReadProgress { get => _readProgress; set { _readProgress = value; OnChanged(nameof(ReadProgress)); } }
             public System.Windows.Media.ImageSource? CoverImage { get => _coverImage; set { _coverImage = value; OnChanged(nameof(CoverImage)); } }
 
+            // Selo 🔞 sobreposto no canto da capa. Null = obra sem a marca, e a
+            // Image do card simplesmente não desenha nada.
+            private System.Windows.Media.ImageSource? _nsfwBadge;
+            public System.Windows.Media.ImageSource? NsfwBadge { get => _nsfwBadge; set { _nsfwBadge = value; OnChanged(nameof(NsfwBadge)); } }
+
+            // Obra ainda em publicação: os passos do pipeline só tocam o que falta.
+            private bool _isOngoing;
+            public bool IsOngoing { get => _isOngoing; set { _isOngoing = value; OnChanged(nameof(IsOngoing)); OnChanged(nameof(OngoingMark)); } }
+            public string OngoingMark => _isOngoing ? "🔄" : "";
+
             // Standalone MOBI file (not a manga folder)
             public string? MobiFilePath { get; set; }
             public bool IsMobiOnly => !string.IsNullOrEmpty(MobiFilePath);
@@ -1121,6 +1407,9 @@ namespace MangaManager
             // Detecta Kindle uma vez para todos os cards
             string? kindleDocsPath = FindKindlePath();
 
+            // O selo 🔞 é o mesmo para todos os cards: carrega uma vez só.
+            await EnsureNsfwBadgeImageAsync();
+
             // Se for admin, busca o catálogo do AnimeUnited uma vez para marcar quem já está no servidor
             HashSet<string>? animeUnitedNames = null;
             if (_isAnimeUnitedAdmin)
@@ -1220,6 +1509,13 @@ namespace MangaManager
             // Idioma gravado no ComicInfo.xml (LanguageISO), se já existir
             string languageBadge = LanguageBadge(ReadLanguageFromComicInfo(fullPath));
 
+            var flags = LoadMangaFlags(fullPath);
+
+            // Quando o selo foi gravado na capa (cover_original.jpg é a prova de que
+            // isso aconteceu), a sobreposição do card seria um segundo selo em cima
+            // do primeiro. Ela só entra quando a capa não pôde receber a marca.
+            bool coverCarriesBadge = File.Exists(Path.Combine(fullPath, CoverOriginalName));
+
             // Progresso de leitura a partir do JSON salvo (atualizado quando Kindle conectado)
             string readProgress = "";
             if (hasMobi)
@@ -1254,6 +1550,8 @@ namespace MangaManager
                 ChkAnimeUnited = (animeUnitedNames != null && animeUnitedNames.Contains(name)) ? "☁" : "",
                 ChkLanguage = languageBadge,
                 ReadProgress = readProgress,
+                NsfwBadge = flags.Nsfw && !coverCarriesBadge ? _nsfwBadgeImage : null,
+                IsOngoing = flags.Ongoing,
             };
         }
 
@@ -2256,11 +2554,14 @@ namespace MangaManager
             }
 
             var token = StartOperation();
+            bool ongoing = IsOngoing(path);
+            if (ongoing) Log("🔄 Ongoing: chapters already extracted will be left alone.");
 
             await Task.Run(() =>
             {
                 var volumes = Directory.GetDirectories(path, "* - Volume *").OrderBy(x => x).ToArray();
                 int total = volumes.Sum(v => GetMangaFiles(v).Length);
+                int reused = 0;
 
                 if (total == 0)
                 {
@@ -2306,6 +2607,21 @@ namespace MangaManager
                         }
 
                         string dest = Path.Combine(vol, chapterName);
+
+                        // Obra em andamento: capítulo que já tem páginas no disco fica
+                        // como está — só os novos passam pelo 7-Zip.
+                        if (ongoing && HasPages(dest))
+                        {
+                            reused++;
+                            current++;
+                            Dispatcher.Invoke(() =>
+                            {
+                                ProgressBar.Value = (double)current / total * 100;
+                                ProgressText.Text = $"{current} / {total}";
+                            });
+                            continue;
+                        }
+
                         Directory.CreateDirectory(dest);
 
                         bool isPdf  = cbz.EndsWith(".pdf",  StringComparison.OrdinalIgnoreCase);
@@ -2341,6 +2657,9 @@ namespace MangaManager
                         });
                     }
                 }
+
+                if (reused > 0)
+                    Dispatcher.Invoke(() => Log($"  🔄 {reused} chapter(s) already extracted were kept."));
             });
 
             Log("Extraction complete.");
@@ -3043,6 +3362,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             selected.ChkKindle = updated.ChkKindle;
             selected.ChkLanguage = updated.ChkLanguage;
             selected.ReadProgress = updated.ReadProgress;
+            selected.NsfwBadge = updated.NsfwBadge;
+            selected.IsOngoing = updated.IsOngoing;
 
             UpdateButtonStates(fullPath);
         }
@@ -3327,6 +3648,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             DetailChapters.Text  = totalChapters > 0 ? totalChapters.ToString() : "—";
 
             _currentMangaPath = mangaPath;
+            SyncFlagCheckboxes(mangaPath);
 
             if (_isAnimeUnitedMode)
             {
@@ -3418,6 +3740,72 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             KindleVolumeSection.Visibility = Visibility.Collapsed;
             ReadVolumeList.ItemsSource = null;
             ReadVolumeSection.Visibility = Visibility.Collapsed;
+            SyncFlagCheckboxes(null);
+        }
+
+        // ── Marcas da obra ───────────────────────────────────────────────────
+        // Marcar as caixas em código dispara Checked/Unchecked como se fosse
+        // clique do usuário; esta trava evita regravar o JSON e remexer na capa.
+        private bool _syncingFlags;
+
+        private void SyncFlagCheckboxes(string? mangaPath)
+        {
+            _syncingFlags = true;
+            try
+            {
+                bool enabled = mangaPath != null && Directory.Exists(mangaPath) && !_isAnimeUnitedMode;
+                var flags = enabled ? LoadMangaFlags(mangaPath!) : new MangaFlags();
+
+                ChkNsfw.IsEnabled    = enabled;
+                ChkOngoing.IsEnabled = enabled;
+                ChkNsfw.IsChecked    = flags.Nsfw;
+                ChkOngoing.IsChecked = flags.Ongoing;
+            }
+            finally { _syncingFlags = false; }
+        }
+
+        private async void ChkNsfw_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_syncingFlags || _currentMangaPath == null) return;
+
+            bool nsfw = ChkNsfw.IsChecked == true;
+            var flags = LoadMangaFlags(_currentMangaPath) with { Nsfw = nsfw };
+            SaveMangaFlags(_currentMangaPath, flags);
+
+            bool badgeOnCover = false;
+            if (nsfw)
+            {
+                await EnsureNsfwBadgeImageAsync();
+                badgeOnCover = await ApplyNsfwBadgeToCover(_currentMangaPath);
+                if (badgeOnCover)
+                    Log($"🔞 {Path.GetFileName(_currentMangaPath)} marked NSFW — badge applied to cover.jpg.");
+            }
+            else
+            {
+                if (RemoveNsfwBadgeFromCover(_currentMangaPath))
+                    Log($"{Path.GetFileName(_currentMangaPath)} is no longer NSFW — clean cover restored.");
+            }
+
+            if (MangaList.SelectedItem is MangaItem item)
+            {
+                // Selo gravado na capa dispensa a sobreposição; sem capa, ela é a marca.
+                item.NsfwBadge = nsfw && !badgeOnCover ? _nsfwBadgeImage : null;
+                item.CoverImage = LoadImageFromFile(Path.Combine(_currentMangaPath, CoverName));
+            }
+        }
+
+        private void ChkOngoing_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_syncingFlags || _currentMangaPath == null) return;
+
+            bool ongoing = ChkOngoing.IsChecked == true;
+            SaveMangaFlags(_currentMangaPath, LoadMangaFlags(_currentMangaPath) with { Ongoing = ongoing });
+
+            if (MangaList.SelectedItem is MangaItem item) item.IsOngoing = ongoing;
+
+            Log(ongoing
+                ? $"🔄 {Path.GetFileName(_currentMangaPath)}: ongoing — each step will only handle what is missing."
+                : $"{Path.GetFileName(_currentMangaPath)}: no longer ongoing — every step reprocesses in full.");
         }
 
         private void SetDetailYesNo(System.Windows.Controls.TextBlock tb, bool value)
@@ -4036,6 +4424,46 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             var client = new AnimeUnitedClient(apiUrl, apiKey,
                 Properties.Settings.Default.AnimeUnitedUserEmail);
             var token = StartOperation();
+
+            // Registro do que já subiu. O servidor lista volumes, não capítulos, então
+            // o que diz se um capítulo mudou é a digital guardada aqui; o volume vindo
+            // do servidor confirma que aquilo realmente chegou lá.
+            var uploadState = LoadUploadState(mangaPath);
+            int upToDate = 0;
+
+            if (IsOngoing(mangaPath))
+            {
+                var remoteVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    foreach (var v in await client.GetVolumesAsync(item.Name)) remoteVolumes.Add(v.Name);
+                }
+                catch (Exception ex)
+                {
+                    Log($"🔄 Could not list what is on the server ({ex.Message}) — sending everything.");
+                    remoteVolumes = null!;
+                }
+
+                if (remoteVolumes != null)
+                {
+                    var pending = chapters.Where(c =>
+                        !(remoteVolumes.Contains(c.VolumeName) &&
+                          uploadState.TryGetValue(UploadKey(c.VolumeName, c.ChapterName), out var fp) &&
+                          fp == ChapterFingerprint(c.ChapterDir))).ToList();
+
+                    upToDate = chapters.Count - pending.Count;
+                    if (upToDate > 0) Log($"🔄 Ongoing: {upToDate} chapter(s) already on the server were skipped.");
+
+                    if (pending.Count == 0)
+                    {
+                        Log("✓ Nothing to upload — the server already has every chapter.");
+                        EndOperation();
+                        return;
+                    }
+                    chapters = pending;
+                }
+            }
+
             try
             {
                 int done = 0;
@@ -4050,6 +4478,11 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     {
                         await client.UploadChapterAsync(item.Name, volumeName, chapterName, chapterDir);
                         done++;
+
+                        // Grava a cada capítulo: interromper no meio não faz o próximo
+                        // envio recomeçar do zero.
+                        uploadState[UploadKey(volumeName, chapterName)] = ChapterFingerprint(chapterDir);
+                        SaveUploadState(mangaPath, uploadState);
                     }
                     catch (Exception chapterEx)
                     {
@@ -4097,9 +4530,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                     }
                 }
 
+                string reusedNote = upToDate > 0 ? $" ({upToDate} already there)" : "";
                 Log(failed == 0
-                    ? $"Uploaded {done} chapter(s) of {item.Name} to AnimeUnited."
-                    : $"Uploaded {done} chapter(s), {failed} failed, of {item.Name} to AnimeUnited.");
+                    ? $"Uploaded {done} chapter(s) of {item.Name} to AnimeUnited{reusedNote}."
+                    : $"Uploaded {done} chapter(s), {failed} failed, of {item.Name} to AnimeUnited{reusedNote}.");
                 LoadMangas();
             }
             catch (Exception ex)

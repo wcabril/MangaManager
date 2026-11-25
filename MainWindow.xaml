@@ -189,6 +189,13 @@
                                                 Padding="5,2" Visibility="{Binding HasLanguage}">
                                             <TextBlock Text="{Binding ChkLanguage}" Foreground="White" FontSize="10" FontWeight="Bold"/>
                                         </Border>
+                                        <!-- Selo 🔞: fonte nula quando a obra não é marcada, e nada é desenhado -->
+                                        <Image Source="{Binding NsfwBadge}" Width="48" Height="48"
+                                               HorizontalAlignment="Right" VerticalAlignment="Top"
+                                               Margin="0,5,5,0" Stretch="Uniform"/>
+                                        <TextBlock Text="{Binding OngoingMark}" FontSize="13"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                   Margin="0,0,5,4"/>
                                     </Grid>
                                     <!-- NOME -->
                                     <Border Background="{Binding StatusColor}" Padding="4,4,4,2">
@@ -232,6 +239,18 @@
                         <TextBlock Text="AUTHOR" Foreground="#555" FontSize="9" FontWeight="Bold" Margin="0,0,0,2"/>
                         <TextBlock x:Name="DetailAuthor" Text="—" Foreground="White"
                                    FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                        <Separator Background="#333" Margin="0,0,0,10"/>
+
+                        <!-- Marcas da obra -->
+                        <CheckBox x:Name="ChkNsfw" Content="🔞 NSFW" Foreground="#E85D04"
+                                  FontSize="11" Margin="0,0,0,6" IsEnabled="False"
+                                  ToolTip="Põe o selo NSFW no canto da capa (cover.jpg) e no card."
+                                  Checked="ChkNsfw_Changed" Unchecked="ChkNsfw_Changed"/>
+                        <CheckBox x:Name="ChkOngoing" Content="🔄 Em andamento" Foreground="#00A8E1"
+                                  FontSize="11" Margin="0,0,0,10" IsEnabled="False"
+                                  ToolTip="Obra ainda em publicação: extrair, processar, KCC e upload refazem só o que falta."
+                                  Checked="ChkOngoing_Changed" Unchecked="ChkOngoing_Changed"/>
 
                         <Separator Background="#333" Margin="0,0,0,10"/>
 
